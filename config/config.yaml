@@ -1,0 +1,205 @@
+# =============================================================================
+# btc_parser_app configuration
+#
+# Every tunable in the app lives here so behaviour can be changed without
+# touching code: API endpoints, polling cadence, rate-limit budget, RPC
+# connection details, and the mining-pool signature dataset location.
+#
+# Paths are relative to the full_app/ directory (this file's parent's
+# parent), regardless of the working directory the app is launched from.
+# Absolute paths are also accepted anywhere a path is expected.
+# =============================================================================
+
+logging:
+  level: INFO
+  # Every command writes rotating log files here (in addition to stdout),
+  # one file per command name (e.g. logs/rpc-ingest.log, logs/api-poll.log).
+  # This is what start.sh's background services log to.
+  log_dir: "logs"
+
+# -----------------------------------------------------------------------
+# mempool.space HTTP API fetcher ("api_ingest" in Script_plan.md)
+# -----------------------------------------------------------------------
+mempool_api:
+  base_url: "https://mempool.space"
+
+  output_dir: "out_mempool_api"
+
+  request_timeout_seconds: 20
+  # Transient connection-level failures (reset connections, SSL EOF, etc.)
+  # get a couple of quick retries. This is separate from 429 handling,
+  # which never retries and halts the affected loop instead.
+  max_connection_retries: 2
+  retry_backoff_seconds: 3.0
+
+  # Shared token-bucket budget covering every request this app makes
+  # against mempool.space. requests_per_minute is the steady-state refill
+  # rate; bucket_size is the burst allowance (how many requests can fire
+  # back-to-back before the rate limit kicks in).
+  rate_limit:
+    requests_per_minute: 10
+    bucket_size: 10
+
+  # One row group (CSV) per endpoint. `parser` selects the row-shaping
+  # function in btc_parser_app.api.mempool_endpoints - add a new endpoint by
+  # writing a `parse_<name>` function there and an entry here.
+  endpoints:
+    - name: fees_precise
+      path: /api/v1/fees/precise
+      parser: fees_precise
+      interval_seconds: 60
+
+    - name: mempool
+      path: /api/mempool
+      parser: mempool
+      interval_seconds: 60
+
+    - name: prices
+      path: /api/v1/prices
+      parser: prices
+      interval_seconds: 60
+
+    # Covers retarget ETA/progress. Moves slowly but is cheap enough to
+    # poll on the same fast cadence as the others.
+    - name: difficulty_adjustment
+      path: /api/v1/difficulty-adjustment
+      parser: difficulty_adjustment
+      interval_seconds: 60
+
+    # A rolling 24h window barely moves between polls, so it gets its own
+    # slow interval instead of burning a request every minute.
+    - name: mining_pools_24h
+      path: /api/v1/mining/pools/24h
+      parser: mining_pools_24h
+      interval_seconds: 86400
+
+# -----------------------------------------------------------------------
+# Mining-pool signature dataset used by the RPC-side mining pool extractor
+# (btc_parser_app.rpc.mining_pools). Same format and upstream source as
+# mempool.space's own pools-v2.json: pool name, known payout addresses, and
+# coinbase-scriptSig ASCII tags. This is the only source of mining pool
+# attribution in this app - matching happens locally against RPC block
+# data, with no per-block API calls to mempool.space.
+# -----------------------------------------------------------------------
+mining_pools_dataset:
+  source_url: "https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json"
+  local_path: "config/pools-v2.json"
+  # 1 week, matching the upstream project's own update cadence. A bundled
+  # snapshot ships in config/pools-v2.json so the RPC parser works offline
+  # without ever running the refresh.
+  refresh_interval_seconds: 604800
+
+# -----------------------------------------------------------------------
+# bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md).
+#
+# There is exactly one RPC parsing implementation (btc_parser_app.rpc.ingest,
+# the `rpc-ingest` command) - no separate "backfill" vs "incremental" script.
+# It works the same way no matter how many blocks are already parsed: on
+# first run (no state files yet) it starts from height 0 and catches up to
+# the tip; on every later run it resumes exactly where it left off. It's a
+# long-running process, meant to be started once (see ../start.sh) and left
+# running - it keeps polling the node and catching up forever, handling
+# reorgs as they happen rather than needing a separate mode for them.
+# -----------------------------------------------------------------------
+rpc:
+  bitcoin_cli_path: "bitcoin-cli"
+
+  # Extra flags appended to every bitcoin-cli invocation, e.g.
+  #   ["-rpcconnect=192.168.x.x", "-rpcport=8332", "-datadir=/path/to/datadir"]
+  # Do NOT put -rpcuser/-rpcpassword here (or any secret) - this file is
+  # meant to be safe to commit. Use rpcuser_env/rpcpassword_env below (or a
+  # cookie file reachable via -datadir/-rpccookiefile in extra_args)
+  # instead.
+  #
+  # Production deployment (see ../bitcoin-storage-ssh.yaml,
+  # ../bitcoin-core.yaml): full_app runs on the bitcoin-storage-ssh pod,
+  # which shares bitcoind's data volume (mounted there at /bitcoin - same
+  # PVC as bitcoind's own /var/lib/bitcoin) but is a *separate* pod/network
+  # namespace from bitcoin-core, whose RPC is currently rpcbind=127.0.0.1
+  # with a NetworkPolicy blocking all ingress. Once that reachability is
+  # sorted out on the cluster side, point at it here - the cookie file is
+  # already right there on the shared volume, so no rpcuser/rpcpassword
+  # should be needed:
+  #   extra_args: ["-rpcconnect=<address you expose bitcoind RPC on>", "-rpcport=8332", "-rpccookiefile=/bitcoin/.cookie"]
+  extra_args: []
+
+  # Names of environment variables holding RPC credentials, read at
+  # runtime. Only used if both are set and non-empty; otherwise bitcoin-cli
+  # falls back to cookie-file auth as usual. Passing a password on the
+  # command line is visible to anyone who can run `ps` on this host -
+  # prefer cookie-file auth when that matters.
+  rpcuser_env: "BITCOIN_RPC_USER"
+  rpcpassword_env: "BITCOIN_RPC_PASSWORD"
+
+  batch_size: 20 # blocks per disk flush / current.csv checkpoint
+  output_dir: "out_trimmed"
+
+  # How many confirmations behind the node's tip `rpc-ingest` parses up to
+  # (`latest = tip - reorg_confirmations`). Blocks this deep are extremely
+  # unlikely to be reorged out, so this is the steady-state processing
+  # frontier. See the "RPC Parser Reorg Handling" section of
+  # Script_plan.md.
+  reorg_confirmations: 6
+  # Safety cap on how many blocks `rpc-ingest` will walk backwards through
+  # previousblockhash looking for a common ancestor during reorg recovery.
+  # A real reorg should never approach this; it exists so a bug or a
+  # corrupted index/ can't spin the walk-back into an unbounded loop -
+  # it raises instead, requiring manual intervention.
+  max_reorg_depth: 100
+  # Once caught up to the tip, how long to sleep between checks for a new
+  # block. While catching up from behind (e.g. the initial genesis backfill,
+  # or after downtime), rpc-ingest never sleeps - it keeps processing
+  # batches back-to-back until it's caught up, then falls back to this
+  # cadence.
+  poll_interval_seconds: 30
+
+  # Retry/timeout handling for individual bitcoin-cli invocations (a
+  # transient node restart, cookie-file rotation, or network blip). Every
+  # get_block_* call goes through this - see rpc/client.py's run_cli. After
+  # max_cli_retries is exhausted, the ingest loop backs off and retries the
+  # whole pass rather than crashing (see run_rpc_ingest).
+  max_cli_retries: 3
+  cli_retry_backoff_seconds: 5
+  cli_timeout_seconds: 30
+
+  blocks_per_day: 144 # nominal 10-min blocks; used only to approximate coin age in days
+  max_block_weight: 4000000
+  halving_interval_blocks: 210000
+  initial_subsidy_sats: 5000000000
+
+# -----------------------------------------------------------------------
+# Stale/orphaned chain-tip pipeline ("stale-blocks-ingest" command,
+# btc_parser_app.rpc.stale_blocks). Separate output from rpc.output_dir -
+# these are non-active tips (getchaintips status valid-fork/valid-headers/
+# headers-only), so they get their own sourcetype rather than being mixed
+# into blocks.csv/transactions.csv, which are main-chain-only.
+# -----------------------------------------------------------------------
+stale_blocks:
+  output_dir: "out_stale_blocks"
+  # Internal bookkeeping only (what's already known/exported) - not meant
+  # for Splunk. Keep separate from output_dir so a Splunk forwarder pointed
+  # at output_dir doesn't also pick up this state.
+  state_dir: "state/stale_blocks"
+
+  # How often to run getchaintips against this node and fetch a header for
+  # each non-active tip it reports.
+  node_poll_interval_seconds: 3600 # hourly
+
+  request_timeout_seconds: 30
+
+  # bitcoin-data/stale-blocks on GitHub - a crowd-sourced backfill of
+  # stale/orphaned tips seen by other nodes' getchaintips, going back
+  # further than this node's own (currently ~10) peers can still show it.
+  # Every header pulled from here is independently re-validated
+  # (double-SHA256, see common/block_header.py) and parsed entirely
+  # offline - never handed to this node via submitheader. Bitcoin Core's
+  # checkpoint mechanism categorically rejects any competing header/block
+  # at or below its highest hardcoded checkpoint; confirmed in production
+  # this covers the overwhelming majority of this dataset (right up to
+  # within ~1000 blocks of the live tip), so submitting these to the node
+  # would only ever unlock a small, inconsistent fraction of them. Since
+  # only header fields are needed here, that wall doesn't matter - see
+  # rpc/stale_blocks.py's module docstring.
+  github:
+    csv_url: "https://raw.githubusercontent.com/bitcoin-data/stale-blocks/master/stale-blocks.csv"
+    poll_interval_seconds: 86400 # daily

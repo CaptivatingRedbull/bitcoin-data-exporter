@@ -1,0 +1,126 @@
+# =============================================================================
+# Production config for the bitcoin-storage-ssh pod (developer@192.168.15.21,
+# see ../../bitcoin-storage-ssh.yaml). Same schema/settings as config.yaml -
+# see that file's comments for what each key does - just pointed at this
+# pod's actual mounts instead of local-dev-relative paths:
+#
+#   - rpc.output_dir / mempool_api.output_dir / logging.log_dir all live on
+#     the 4TiB `bitcoin-parser-data` PVC, mounted at /parser-data. The
+#     bitcoin-storage-ssh-home PVC (where this repo is presumably cloned)
+#     is only 5Gi - nowhere near enough for chain data.
+#   - rpc.extra_args connects straight to the bitcoin-core pod's RPC
+#     (10.42.5.56:8332 - its in-cluster pod IP, confirmed reachable from
+#     bitcoin-storage-ssh as of 2026-08-13) and authenticates via the
+#     cookie file on the shared bitcoin-core-data PVC (/bitcoin/.cookie in
+#     this pod, same volume as bitcoind's own /var/lib/bitcoin) - no
+#     rpcuser/rpcpassword needed. Note: 10.42.5.56 is a pod IP, not a
+#     Service ClusterIP/DNS name, so it will change if the bitcoin-core
+#     pod is ever rescheduled - repoint this at whatever the new IP (or a
+#     stable Service, if one gets added later) is if RPC calls start
+#     failing again.
+#   - bitcoin_cli_path points at this pod's linuxbrew-installed bitcoin-cli
+#     (not on PATH for non-interactive/subprocess invocations otherwise).
+#
+# Run with:  python run.py --config config/config.production.yaml rpc-ingest
+#        or: BTC_PARSER_CONFIG=config/config.production.yaml ./start.sh
+# (--config works either before or after the subcommand, but put it first -
+#  see cli.py's build_parser() for why "after" used to break.)
+# =============================================================================
+
+logging:
+  level: INFO
+  log_dir: "/parser-data/logs"
+
+# -----------------------------------------------------------------------
+# mempool.space HTTP API fetcher ("api_ingest" in Script_plan.md)
+# -----------------------------------------------------------------------
+mempool_api:
+  base_url: "https://mempool.space"
+
+  output_dir: "/parser-data/out_mempool_api"
+
+  request_timeout_seconds: 20
+  max_connection_retries: 2
+  retry_backoff_seconds: 3.0
+
+  rate_limit:
+    requests_per_minute: 10
+    bucket_size: 10
+
+  endpoints:
+    - name: fees_precise
+      path: /api/v1/fees/precise
+      parser: fees_precise
+      interval_seconds: 60
+
+    - name: mempool
+      path: /api/mempool
+      parser: mempool
+      interval_seconds: 60
+
+    - name: prices
+      path: /api/v1/prices
+      parser: prices
+      interval_seconds: 60
+
+    - name: difficulty_adjustment
+      path: /api/v1/difficulty-adjustment
+      parser: difficulty_adjustment
+      interval_seconds: 60
+
+    - name: mining_pools_24h
+      path: /api/v1/mining/pools/24h
+      parser: mining_pools_24h
+      interval_seconds: 86400
+
+# -----------------------------------------------------------------------
+# Mining-pool signature dataset
+# -----------------------------------------------------------------------
+mining_pools_dataset:
+  source_url: "https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json"
+  local_path: "config/pools-v2.json"
+  refresh_interval_seconds: 604800
+
+# -----------------------------------------------------------------------
+# bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)
+# -----------------------------------------------------------------------
+rpc:
+  bitcoin_cli_path: "/home/linuxbrew/.linuxbrew/bin/bitcoin-cli"
+
+  extra_args: ["-rpcconnect=10.42.5.56", "-rpcport=8332", "-rpccookiefile=/bitcoin/.cookie"]
+
+  # Cookie-file auth via extra_args above - these are unused unless you
+  # switch to rpcuser/rpcpassword auth instead.
+  rpcuser_env: "BITCOIN_RPC_USER"
+  rpcpassword_env: "BITCOIN_RPC_PASSWORD"
+
+  batch_size: 20
+  output_dir: "/parser-data/out_trimmed"
+
+  reorg_confirmations: 6
+  max_reorg_depth: 100
+  poll_interval_seconds: 30
+
+  max_cli_retries: 3
+  cli_retry_backoff_seconds: 5
+  cli_timeout_seconds: 30
+
+  blocks_per_day: 144
+  max_block_weight: 4000000
+  halving_interval_blocks: 210000
+  initial_subsidy_sats: 5000000000
+
+# -----------------------------------------------------------------------
+# Stale/orphaned chain-tip pipeline - see config.yaml's comments for what
+# each key does. Only the paths differ, same as the other sections above.
+# -----------------------------------------------------------------------
+stale_blocks:
+  output_dir: "/parser-data/out_stale_blocks"
+  state_dir: "/parser-data/state/stale_blocks"
+
+  node_poll_interval_seconds: 3600
+  request_timeout_seconds: 30
+
+  github:
+    csv_url: "https://raw.githubusercontent.com/bitcoin-data/stale-blocks/master/stale-blocks.csv"
+    poll_interval_seconds: 86400
