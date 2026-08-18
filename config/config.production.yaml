@@ -90,7 +90,6 @@ pricing:
 
   kraken:
     csv_path: "config/kraken_xbtusd_daily.csv"
-    pair: "XBTUSD"
 
   backfill:
     endpoint_path: "/api/v1/historical-price"

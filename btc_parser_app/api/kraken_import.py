@@ -38,7 +38,11 @@ def import_kraken_csv(config: PricingConfig) -> int:
         )
 
     price_daily_path = config.output_dir / "price_daily.csv"
-    already_imported = existing_dates(price_daily_path, source="kraken")
+    # No source filter: a date already covered by price_backfill.py (source=
+    # mempool_backfill) must also be skipped here, or re-running this import
+    # after api-poll has been filling recent gaps would append a second,
+    # duplicate row for the same date_unix.
+    already_imported = existing_dates(price_daily_path)
 
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -48,16 +52,9 @@ def import_kraken_csv(config: PricingConfig) -> int:
             try:
                 timestamp, open_, high, low, close, volume, trades = raw_row[:7]
                 date_unix = int(timestamp)
-            except ValueError as exc:
-                raise ValueError(
-                    f"{csv_path}:{line_no}: expected "
-                    f"unix_timestamp,open,high,low,close,volume,trades, got {raw_row!r}"
-                ) from exc
-
-            if date_unix in already_imported:
-                continue
-            rows.append(
-                make_price_row(
+                if date_unix in already_imported:
+                    continue
+                row = make_price_row(
                     date_unix,
                     "kraken",
                     usd=float(close),
@@ -68,7 +65,13 @@ def import_kraken_csv(config: PricingConfig) -> int:
                     volume_btc=float(volume),
                     trades=int(float(trades)),
                 )
-            )
+            except ValueError as exc:
+                raise ValueError(
+                    f"{csv_path}:{line_no}: expected "
+                    f"unix_timestamp,open,high,low,close,volume,trades, got {raw_row!r}"
+                ) from exc
+
+            rows.append(row)
 
     if not rows:
         logger.info("Kraken import: nothing new in %s (already up to date).", csv_path)

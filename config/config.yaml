@@ -115,7 +115,6 @@ pricing:
     # the gap-filler below works independently and doesn't need this to run
     # first, it just has more ground to cover without it (see start_date).
     csv_path: "config/kraken_xbtusd_daily.csv"
-    pair: "XBTUSD"
 
   backfill:
     # Runs inside api-poll as an extra background loop sharing

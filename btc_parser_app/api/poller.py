@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 
-from btc_parser_app.api.client import ApiClient, FetchError, RateLimited
+from btc_parser_app.api.client import ApiClient, FetchError, RateLimited, handle_rate_limited
 from btc_parser_app.api.mempool_endpoints import PARSER_REGISTRY, PolledAt
 from btc_parser_app.api.price_backfill import run_price_backfill_loop
 from btc_parser_app.api.rate_limiter import TokenBucket
@@ -68,9 +68,7 @@ def fetch_and_write(
     try:
         data = client.get_json(url)
     except RateLimited as exc:
-        logger.error("[%s] %s - stopping poller.", endpoint.name, exc)
-        rate_limited_event.set()
-        stop_event.set()
+        handle_rate_limited(exc, f"[{endpoint.name}]", rate_limited_event, stop_event)
         return
     except FetchError as exc:
         logger.warning("[%s] %s", endpoint.name, exc)

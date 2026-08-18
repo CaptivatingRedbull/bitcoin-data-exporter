@@ -23,10 +23,9 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 
-from btc_parser_app.api.client import ApiClient, FetchError, RateLimited
-from btc_parser_app.api.price_daily import latest_date, make_price_row
+from btc_parser_app.api.client import ApiClient, FetchError, RateLimited, handle_rate_limited
+from btc_parser_app.api.price_daily import existing_dates, make_price_row
 from btc_parser_app.common.csv_writer import write_rows_to_csv
 from btc_parser_app.config import PricingConfig
 
@@ -48,14 +47,20 @@ def _yesterday_utc_midnight() -> int:
 
 
 def _next_missing_day(
-    price_daily_path: Path, start_date_unix: int, unresolved: set[int]
+    known_dates: set[int], start_date_unix: int, unresolved: set[int]
 ) -> int | None:
-    latest = latest_date(price_daily_path)
-    day = (latest + _SECONDS_PER_DAY) if latest is not None else start_date_unix
+    """The oldest UTC day in [start_date_unix, yesterday] that's neither on
+    file (known_dates) nor already tried-and-failed this run (unresolved) -
+    a real scan, not just "latest known day + 1", so a gap left behind by an
+    unresolved day is still found (and retried, once known_dates is
+    refreshed on restart) even after a later day gets filled."""
     end = _yesterday_utc_midnight()
-    while day in unresolved and day <= end:
+    day = start_date_unix
+    while day <= end:
+        if day not in known_dates and day not in unresolved:
+            return day
         day += _SECONDS_PER_DAY
-    return day if day <= end else None
+    return None
 
 
 def _fetch_day(
@@ -78,6 +83,10 @@ def run_price_backfill_loop(
 ) -> None:
     price_daily_path = config.output_dir / "price_daily.csv"
     unresolved: set[int] = set()
+    # Read once per thread start rather than on every tick - updated
+    # in-memory below as rows are written, instead of re-parsing the whole
+    # CSV from disk every request_interval_seconds while idle.
+    known_dates = existing_dates(price_daily_path)
 
     logger.info(
         "Price backfill: filling gaps in %s from %s onward (currency=%s), "
@@ -88,7 +97,7 @@ def run_price_backfill_loop(
     )
 
     while not stop_event.is_set():
-        day = _next_missing_day(price_daily_path, config.backfill.start_date_unix, unresolved)
+        day = _next_missing_day(known_dates, config.backfill.start_date_unix, unresolved)
         if day is None:
             if stop_event.wait(timeout=config.backfill.request_interval_seconds):
                 return
@@ -97,9 +106,7 @@ def run_price_backfill_loop(
         try:
             price = _fetch_day(config, base_url, client, day)
         except RateLimited as exc:
-            logger.error("Price backfill: %s - stopping poller.", exc)
-            rate_limited_event.set()
-            stop_event.set()
+            handle_rate_limited(exc, "Price backfill", rate_limited_event, stop_event)
             return
         except FetchError as exc:
             logger.warning("Price backfill: %s", exc)
@@ -118,7 +125,7 @@ def run_price_backfill_loop(
             row = make_price_row(
                 day,
                 "mempool_backfill",
-                usd=price.get(config.backfill.currency.upper()),
+                usd=price.get("USD"),
                 eur=price.get("EUR"),
                 gbp=price.get("GBP"),
                 cad=price.get("CAD"),
@@ -127,6 +134,7 @@ def run_price_backfill_loop(
                 jpy=price.get("JPY"),
             )
             write_rows_to_csv([row], price_daily_path)
+            known_dates.add(day)
             logger.info(
                 "Price backfill: filled %s.",
                 datetime.fromtimestamp(day, tz=timezone.utc).date(),

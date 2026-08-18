@@ -166,7 +166,6 @@ def _load_mining_pools_dataset(
 @dataclass(frozen=True)
 class KrakenImportConfig:
     csv_path: Path
-    pair: str
 
 
 @dataclass(frozen=True)
@@ -207,7 +206,6 @@ def _load_pricing(raw: dict[str, Any], root: Path) -> PricingConfig:
         output_dir=_resolve_path(root, _require(section, "output_dir", "pricing")),
         kraken=KrakenImportConfig(
             csv_path=_resolve_path(root, _require(kraken_raw, "csv_path", "pricing.kraken")),
-            pair=str(_require(kraken_raw, "pair", "pricing.kraken")),
         ),
         backfill=PriceBackfillConfig(
             endpoint_path=str(_require(backfill_raw, "endpoint_path", "pricing.backfill")),
