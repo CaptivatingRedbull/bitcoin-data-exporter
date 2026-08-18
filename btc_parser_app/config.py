@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,67 @@ def _load_mining_pools_dataset(
         ),
         refresh_interval_seconds=float(
             _require(section, "refresh_interval_seconds", "mining_pools_dataset")
+        ),
+    )
+
+
+# =============================================================================
+# pricing (Kraken bulk import + mempool.space historical-price gap-fill)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class KrakenImportConfig:
+    csv_path: Path
+
+
+@dataclass(frozen=True)
+class PriceBackfillConfig:
+    endpoint_path: str
+    currency: str
+    request_interval_seconds: float
+    start_date_unix: int
+
+
+@dataclass(frozen=True)
+class PricingConfig:
+    output_dir: Path
+    kraken: KrakenImportConfig
+    backfill: PriceBackfillConfig
+
+
+def _parse_utc_date(value: str, key: str) -> int:
+    try:
+        dt = datetime.strptime(str(value), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ConfigError(f"config.yaml: '{key}' must be an ISO date (YYYY-MM-DD): {value!r}") from exc
+    return int(dt.timestamp())
+
+
+def _load_pricing(raw: dict[str, Any], root: Path) -> PricingConfig:
+    section = _require(raw, "pricing", "root")
+    kraken_raw = _require(section, "kraken", "pricing")
+    backfill_raw = _require(section, "backfill", "pricing")
+
+    request_interval_seconds = float(
+        backfill_raw.get("request_interval_seconds", 5)
+    )
+    if request_interval_seconds < 0:
+        raise ConfigError("config.yaml: 'pricing.backfill.request_interval_seconds' must be >= 0")
+
+    return PricingConfig(
+        output_dir=_resolve_path(root, _require(section, "output_dir", "pricing")),
+        kraken=KrakenImportConfig(
+            csv_path=_resolve_path(root, _require(kraken_raw, "csv_path", "pricing.kraken")),
+        ),
+        backfill=PriceBackfillConfig(
+            endpoint_path=str(_require(backfill_raw, "endpoint_path", "pricing.backfill")),
+            currency=str(backfill_raw.get("currency", "USD")),
+            request_interval_seconds=request_interval_seconds,
+            start_date_unix=_parse_utc_date(
+                _require(backfill_raw, "start_date", "pricing.backfill"),
+                "pricing.backfill.start_date",
+            ),
         ),
     )
 
@@ -341,6 +403,7 @@ class AppConfig:
     logging: LoggingConfig
     mempool_api: MempoolApiConfig
     mining_pools_dataset: MiningPoolsDatasetConfig
+    pricing: PricingConfig
     rpc: RpcConfig
     stale_blocks: StaleBlocksConfig
 
@@ -364,6 +427,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         logging=_load_logging(raw, root),
         mempool_api=_load_mempool_api(raw, root),
         mining_pools_dataset=_load_mining_pools_dataset(raw, root),
+        pricing=_load_pricing(raw, root),
         rpc=_load_rpc(raw, root),
         stale_blocks=_load_stale_blocks(raw, root),
     )

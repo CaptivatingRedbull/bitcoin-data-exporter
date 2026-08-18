@@ -16,8 +16,13 @@ Commands:
                             bitcoin-data/stale-blocks GitHub dataset -> out_stale_blocks/).
                             Separate sourcetype from rpc-ingest's main-chain output. Runs until
                             SIGTERM/SIGINT.
-    api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM)
+    api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM).
+                            Also runs the price_daily.csv gap-filler (see pricing.backfill in
+                            config.yaml) sharing the same rate-limit budget.
     update-pools-dataset    Force-refresh config/pools-v2.json from GitHub
+    import-kraken-prices    One-time (idempotent) bulk import of pricing.kraken.csv_path into
+                            pricing.output_dir/price_daily.csv - run this before api-poll to give
+                            the gap-filler a running start (see README.md's Pricing section).
 
 For always-on production use, don't invoke this directly - use ../start.sh,
 which also makes sure bitcoind is up first and runs both long-running
@@ -36,6 +41,7 @@ import sys
 import yaml
 
 from btc_parser_app.api.client import FetchError, RateLimited
+from btc_parser_app.api.kraken_import import import_kraken_csv
 from btc_parser_app.api.mining_pools_dataset import refresh as refresh_pools_dataset
 from btc_parser_app.api.poller import run_poller
 from btc_parser_app.common.logging_setup import configure_logging
@@ -74,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "update-pools-dataset", help="Force-refresh config/pools-v2.json from GitHub"
     )
+    subparsers.add_parser(
+        "import-kraken-prices",
+        help="One-time (idempotent) bulk import of the Kraken OHLC CSV into price_daily.csv",
+    )
 
     return parser
 
@@ -108,13 +118,21 @@ def main(argv: list[str] | None = None) -> int:
         # SIGTERM, so route that through the same handler for a clean stop
         # instead of an abrupt kill.
         signal.signal(signal.SIGTERM, signal.default_int_handler)
-        return run_poller(config.mempool_api)
+        return run_poller(config.mempool_api, pricing_config=config.pricing)
 
     if args.command == "update-pools-dataset":
         try:
             refresh_pools_dataset(config.mining_pools_dataset)
         except (RateLimited, FetchError, ValueError) as exc:
             print(f"Failed to refresh pools dataset: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command == "import-kraken-prices":
+        try:
+            import_kraken_csv(config.pricing)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Failed to import Kraken prices: {exc}", file=sys.stderr)
             return 1
         return 0
 

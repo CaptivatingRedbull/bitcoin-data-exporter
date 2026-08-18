@@ -36,6 +36,21 @@ class FetchError(Exception):
     connection failures after retries, a non-200/429 status, bad JSON."""
 
 
+def handle_rate_limited(
+    exc: RateLimited,
+    context: str,
+    rate_limited_event: threading.Event,
+    stop_event: threading.Event,
+) -> None:
+    """Shared reaction to a 429 for every loop that shares one ApiClient's
+    rate limiter: log it, then set both events so the caller's own loop
+    exits and every other thread sharing rate_limited_event/stop_event wakes
+    and halts with it, instead of a per-caller copy of this logic drifting."""
+    logger.error("%s: %s - stopping poller.", context, exc)
+    rate_limited_event.set()
+    stop_event.set()
+
+
 @dataclass
 class ApiClient:
     session: requests.Session

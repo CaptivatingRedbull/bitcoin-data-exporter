@@ -66,7 +66,7 @@ mempool_api:
     - name: difficulty_adjustment
       path: /api/v1/difficulty-adjustment
       parser: difficulty_adjustment
-      interval_seconds: 60
+      interval_seconds: 300
 
     - name: mining_pools_24h
       path: /api/v1/mining/pools/24h
@@ -80,6 +80,22 @@ mining_pools_dataset:
   source_url: "https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json"
   local_path: "config/pools-v2.json"
   refresh_interval_seconds: 604800
+
+# -----------------------------------------------------------------------
+# BTC/USD daily pricing - see config.yaml's comments for what each key
+# does. Only the paths differ, same as the other sections above.
+# -----------------------------------------------------------------------
+pricing:
+  output_dir: "/parser-data/out_prices"
+
+  kraken:
+    csv_path: "config/kraken_xbtusd_daily.csv"
+
+  backfill:
+    endpoint_path: "/api/v1/historical-price"
+    currency: "USD"
+    request_interval_seconds: 5
+    start_date: "2026-01-01"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)

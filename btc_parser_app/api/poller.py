@@ -16,11 +16,12 @@ from pathlib import Path
 
 import requests
 
-from btc_parser_app.api.client import ApiClient, FetchError, RateLimited
+from btc_parser_app.api.client import ApiClient, FetchError, RateLimited, handle_rate_limited
 from btc_parser_app.api.mempool_endpoints import PARSER_REGISTRY, PolledAt
+from btc_parser_app.api.price_backfill import run_price_backfill_loop
 from btc_parser_app.api.rate_limiter import TokenBucket
 from btc_parser_app.common.csv_writer import write_rows_to_csv
-from btc_parser_app.config import EndpointConfig, MempoolApiConfig
+from btc_parser_app.config import EndpointConfig, MempoolApiConfig, PricingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,7 @@ def fetch_and_write(
     try:
         data = client.get_json(url)
     except RateLimited as exc:
-        logger.error("[%s] %s - stopping poller.", endpoint.name, exc)
-        rate_limited_event.set()
-        stop_event.set()
+        handle_rate_limited(exc, f"[{endpoint.name}]", rate_limited_event, stop_event)
         return
     except FetchError as exc:
         logger.warning("[%s] %s", endpoint.name, exc)
@@ -83,7 +82,11 @@ def fetch_and_write(
         return
 
     write_rows_to_csv(rows, out_dir / f"{endpoint.name}.csv")
-    logger.info(
+    # DEBUG, not INFO: this fires once per endpoint per interval_seconds (5
+    # endpoints => a steady trickle of lines that drowns out the
+    # actually-interesting INFO lines - startup summary, warnings, a 429).
+    # Set logging.level: DEBUG in config.yaml to see these again.
+    logger.debug(
         "[%s] wrote %d row(s) @ %s", endpoint.name, len(rows), polled_at.utc_iso
     )
 
@@ -123,10 +126,14 @@ def endpoint_loop(
 
 
 def run_poller(
-    config: MempoolApiConfig, stop_event: threading.Event | None = None
+    config: MempoolApiConfig,
+    pricing_config: PricingConfig | None = None,
+    stop_event: threading.Event | None = None,
 ) -> int:
-    """Start one thread per endpoint and block until stop_event is set (by a
-    429, or by the caller). Returns a process exit code: 0 for a clean
+    """Start one thread per endpoint (plus, if pricing_config is given, the
+    price_daily.csv gap-filler from price_backfill.py sharing the same
+    ApiClient/TokenBucket) and block until stop_event is set (by a 429, or
+    by the caller). Returns a process exit code: 0 for a clean
     caller-requested stop, 1 if a 429 halted the poller.
 
     stop_event may be caller-owned (an externally constructed Event the
@@ -193,6 +200,24 @@ def run_poller(
         )
         for endpoint in config.endpoints
     ]
+
+    if pricing_config is not None:
+        pricing_config.output_dir.mkdir(parents=True, exist_ok=True)
+        threads.append(
+            threading.Thread(
+                target=run_price_backfill_loop,
+                args=(
+                    pricing_config,
+                    config.base_url,
+                    client,
+                    stop_event,
+                    rate_limited_event,
+                ),
+                name="price-backfill",
+                daemon=True,
+            )
+        )
+
     for t in threads:
         t.start()
 
