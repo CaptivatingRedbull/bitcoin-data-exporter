@@ -105,7 +105,10 @@ def _process_height(
         header = get_block_header(rpc_config, block_hash)
         block_time = int(header["time"])
     else:
-        logger.info("Parsing block %d (%s)...", height, block_hash)
+        # DEBUG, not INFO: during genesis catch-up this fires once per
+        # block (hundreds of thousands of lines) - the per-batch "Progress:"
+        # line below already gives INFO-level visibility.
+        logger.debug("Parsing block %d (%s)...", height, block_hash)
         raw_json = get_block_verbose(rpc_config, block_hash, verbosity=3)
         # Decimal preserves exact BTC amounts until conversion to satoshis.
         block = json.loads(raw_json, parse_float=Decimal)

@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from btc_parser_app.common.json_utils import json_dumps_compact
-
 
 @dataclass(frozen=True)
 class PolledAt:
@@ -56,19 +54,16 @@ def parse_fees_precise(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
 
 
 def parse_mempool(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
-    # fee_histogram is a [feerate, cumulative_vsize] list with 200+ buckets.
-    # We keep count/vsize/fee as first-class scalar columns and stash the
-    # histogram itself as a compact JSON string column rather than either
-    # dropping it or exploding it into its own CSV with no shared key.
-    histogram = data.get("fee_histogram") or []
+    # fee_histogram (a [feerate, cumulative_vsize] list with 200+ buckets) is
+    # deliberately dropped here - a JSON blob stuffed into a CSV cell isn't
+    # useful once it lands in Splunk, and count/vsize/fee already cover the
+    # scalar signal worth indexing.
     return [
         {
             **polled_at.as_dict(),
             "tx_count": data.get("count"),
             "vsize_total": data.get("vsize"),
             "total_fee_sats": data.get("total_fee"),
-            "fee_histogram_bucket_count": len(histogram),
-            "fee_histogram_json": json_dumps_compact(histogram),
         }
     ]
 
