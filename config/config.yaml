@@ -13,9 +13,12 @@
 logging:
   level: INFO
   # Every command writes rotating log files here (in addition to stdout),
-  # one file per command name (e.g. logs/rpc-ingest.log, logs/api-poll.log).
-  # This is what start.sh's background services log to.
-  log_dir: "logs"
+  # one file per command name (e.g. rpc-ingest.log, api-poll.log). This is
+  # what start.sh's background services log to. Lives under parser-data/
+  # alongside state/ and export/ (see rpc.output_dir/state_dir below) purely
+  # for one shared, easy-to-find root - logs are never Splunk-facing exports
+  # or app state the way those two are.
+  log_dir: "parser-data/logs"
 
 # -----------------------------------------------------------------------
 # mempool.space HTTP API fetcher ("api_ingest" in Script_plan.md)
@@ -23,7 +26,14 @@ logging:
 mempool_api:
   base_url: "https://mempool.space"
 
-  output_dir: "out_mempool_api"
+  # Splunk-facing - point a `monitor` (tailing, non-destructive) input here.
+  # Not `batch`: every endpoint's <name>.csv (including prices.csv) is one
+  # ever-growing/rotating file, so there's no per-write "complete file" the
+  # way rpc.output_dir's per-block exports have once caught up - and
+  # prices.csv specifically must never be deleted out from under this app,
+  # since import-price-history reads its full history back to dedupe (see
+  # Pricing below).
+  output_dir: "parser-data/export/api"
 
   request_timeout_seconds: 20
   # Transient connection-level failures (reset connections, SSL EOF, etc.)
@@ -154,7 +164,21 @@ rpc:
   rpcpassword_env: "BITCOIN_RPC_PASSWORD"
 
   batch_size: 20 # blocks per disk flush / current.csv checkpoint
-  output_dir: "out_trimmed"
+
+  # Splunk-facing export - blocks/, transactions/ only. Point a `batch`
+  # (sinkhole, consume-and-delete) input here; nothing else in this app ever
+  # reads it back, so it's always safe. See rpc/part_writer.py: while
+  # there's backlog beyond reorg_confirmations, a part here is only ever
+  # written once (moved in from state_dir below) - it is never written to
+  # in place - and once caught up to the tip, each block's part is written
+  # here directly, already complete.
+  output_dir: "parser-data/export/rpc"
+  # Internal bookkeeping only - never Splunk-facing, keep it out of any
+  # Splunk input pointed at output_dir above. Holds current.csv, latest.csv,
+  # index/, block_status.csv, reorg/, the *_part_seq.csv part counters, and
+  # (while there's backlog) the currently-still-growing blocks/transactions
+  # part, which only moves into output_dir once it's done being appended to.
+  state_dir: "parser-data/state/rpc"
 
   # How many confirmations behind the node's tip `rpc-ingest` parses up to
   # (`latest = tip - reorg_confirmations`). Blocks this deep are extremely
@@ -197,11 +221,11 @@ rpc:
 # into blocks.csv/transactions.csv, which are main-chain-only.
 # -----------------------------------------------------------------------
 stale_blocks:
-  output_dir: "out_stale_blocks"
+  output_dir: "parser-data/export/stale"
   # Internal bookkeeping only (what's already known/exported) - not meant
   # for Splunk. Keep separate from output_dir so a Splunk forwarder pointed
   # at output_dir doesn't also pick up this state.
-  state_dir: "state/stale_blocks"
+  state_dir: "parser-data/state/stale"
 
   # How often to run getchaintips against this node and fetch a header for
   # each non-active tip it reports.

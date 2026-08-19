@@ -34,8 +34,13 @@ from pathlib import Path
 import polars as pl
 
 from btc_parser_app.common.atomic_write import atomic_replace
-from btc_parser_app.common.csv_writer import csv_parts_exist, read_csv_parts, write_rows_to_csv
-
+from btc_parser_app.common.csv_writer import (
+    csv_parts_exist,
+    existing_part_numbers,
+    part_path,
+    read_csv_parts,
+    write_rows_to_csv,
+)
 
 # =============================================================================
 # current.csv / latest.csv - single-row pointer files
@@ -147,26 +152,42 @@ class IndexStore:
         self._pending.clear()
 
 
-def seed_index_from_blocks_csv(index: IndexStore, blocks_csv: Path) -> tuple[int, str] | None:
-    """Bootstrap index/ from an already-existing blocks.csv - e.g. this is
-    not the first-ever run, but current.csv is missing (lost, or this
-    output_dir was populated some other way) - so already-exported blocks
-    are recognized instead of being re-fetched from genesis. Registers
-    every row into `index` and returns the (height, blockhash) of the
-    highest block found, or None if blocks.csv doesn't exist / is empty
-    (nothing to resume from - start fresh at genesis)."""
-    if not csv_parts_exist(blocks_csv):
-        return None
+def seed_index_from_blocks_csv(
+    index: IndexStore, state_blocks_csv: Path, export_blocks_csv: Path
+) -> tuple[int, str] | None:
+    """Bootstrap index/ from whatever blocks.csv data already exists - e.g.
+    this is not the first-ever run, but current.csv is missing (lost, or
+    this state_dir was populated some other way) - so already-exported
+    blocks are recognized instead of being re-fetched from genesis. Parts
+    can be split across state_blocks_csv (the currently-open batched part,
+    if any) and export_blocks_csv (every closed/handed-off part - see
+    rpc/part_writer.py), so both are read and merged by part number.
+    Best-effort only: export_blocks_csv is Splunk-facing, so older parts may
+    already be gone by the time this runs - this recovers whatever's still
+    on disk, not necessarily the full history. Registers every row found
+    into `index` and returns the (height, blockhash) of the highest block
+    found, or None if nothing is found anywhere (start fresh at genesis)."""
+    parts: dict[int, Path] = {}
+    for base in (state_blocks_csv, export_blocks_csv):
+        for number in existing_part_numbers(base):
+            parts[number] = part_path(base, number)
 
-    frame = read_csv_parts(
-        blocks_csv,
-        columns=["height", "hash", "previousblockhash"],
-        schema_overrides={
-            "height": pl.Int64,
-            "hash": pl.Utf8,
-            "previousblockhash": pl.Utf8,
-        },
-    )
+    frames = [
+        pl.read_csv(
+            p,
+            columns=["height", "hash", "previousblockhash"],
+            schema_overrides={
+                "height": pl.Int64,
+                "hash": pl.Utf8,
+                "previousblockhash": pl.Utf8,
+            },
+        )
+        for _, p in sorted(parts.items())
+        if p.stat().st_size > 0
+    ]
+    if not frames:
+        return None
+    frame = pl.concat(frames, how="vertical_relaxed")
     if frame.is_empty():
         return None
 
