@@ -187,12 +187,21 @@ def _load_pricing(raw: dict[str, Any], root: Path) -> PricingConfig:
 
 @dataclass(frozen=True)
 class RpcConfig:
+    """output_dir/state_dir mirror stale_blocks' split: output_dir is the
+    Splunk-facing export (blocks/, transactions/ - safe for a `batch` input
+    to consume-and-delete), state_dir is this app's own bookkeeping
+    (current.csv, latest.csv, index/, block_status.csv, reorg/, the
+    *_part_seq.csv counters, and the currently-still-growing blocks/
+    transactions part while there's backlog - see rpc/part_writer.py) that
+    Splunk should never be pointed at."""
+
     bitcoin_cli_path: str
     extra_args: tuple[str, ...]
     rpcuser_env: str | None
     rpcpassword_env: str | None
     batch_size: int
     output_dir: Path
+    state_dir: Path
     reorg_confirmations: int
     max_reorg_depth: int
     poll_interval_seconds: float
@@ -266,6 +275,7 @@ def _load_rpc(raw: dict[str, Any], root: Path) -> RpcConfig:
         rpcpassword_env=section.get("rpcpassword_env") or None,
         batch_size=batch_size,
         output_dir=_resolve_path(root, _require(section, "output_dir", "rpc")),
+        state_dir=_resolve_path(root, _require(section, "state_dir", "rpc")),
         reorg_confirmations=reorg_confirmations,
         max_reorg_depth=max_reorg_depth,
         poll_interval_seconds=poll_interval_seconds,

@@ -13,7 +13,7 @@ Commands:
                             - see "RPC Parser Reorg Handling" in ../README.md). Runs until
                             SIGTERM/SIGINT.
     stale-blocks-ingest     Run the stale/orphaned chain-tip pipeline (getchaintips + the
-                            bitcoin-data/stale-blocks GitHub dataset -> out_stale_blocks/).
+                            bitcoin-data/stale-blocks GitHub dataset -> stale_blocks.output_dir/).
                             Separate sourcetype from rpc-ingest's main-chain output. Runs until
                             SIGTERM/SIGINT.
     api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM),
@@ -27,7 +27,7 @@ Commands:
 
 For always-on production use, don't invoke this directly - use ../start.sh,
 which also makes sure bitcoind is up first and runs both long-running
-commands detached in the background with logs under logs/.
+commands detached in the background with logs under logging.log_dir.
 
 See full_app/README.md for details and full_app/config/config.yaml for
 every setting these commands read.

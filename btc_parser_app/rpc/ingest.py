@@ -6,12 +6,27 @@ process (meant to be started once - see ../start.sh - and left running).
 There is no separate "backfill" mode: `run_rpc_ingest` behaves identically
 regardless of how many blocks are already parsed.
 
-- Nothing parsed yet (no current.csv, no blocks.csv)? Starts at height 0
-  and catches up to the tip.
-- Some blocks already parsed (current.csv present, or just blocks.csv left
-  over from an earlier/interrupted run)? Resumes exactly where it left off.
+Two directories, per rpc.output_dir/rpc.state_dir in config.py: state_dir
+holds everything internal (current.csv, latest.csv, index/, block_status.csv,
+reorg/, the *_part_seq.csv counters, and - while there's backlog - the
+currently-still-growing blocks/transactions part); output_dir holds only
+complete, Splunk-safe blocks/transactions parts (see rpc/part_writer.py) - a
+part appears there the instant it's done and never before, so a Splunk
+`batch` (consume-and-delete) input pointed at output_dir needs nothing
+excluded, ever.
+
+- Nothing parsed yet (no current.csv, no blocks/blocks.csv anywhere)?
+  Starts at height 0 and catches up to the tip.
+- Some blocks already parsed (current.csv present, or just blocks/blocks.csv
+  left over under state_dir/output_dir from an earlier/interrupted run)?
+  Resumes exactly where it left off.
 - Caught up? Falls back to polling every `rpc.poll_interval_seconds` and
-  keeps following the tip.
+  keeps following the tip. Once a pass's backlog is within
+  `rpc.reorg_confirmations`, blocks/transactions are written one already-
+  complete part per block, straight into output_dir, instead of
+  accumulating into a shared growing part under state_dir - so nothing
+  about the Splunk input needs to change for steady-state tip-following the
+  way it would with one ever-growing file.
 - A reorg, however deep, is just something the normal loop detects and
   recovers from on its own (see _recover_from_reorg) - it never needs
   special-casing by the caller or a separate run mode.
@@ -19,12 +34,13 @@ regardless of how many blocks are already parsed.
 Loop, per pass:
 
 1. Resolve the node tip and set `latest = tip - rpc.reorg_confirmations`.
-2. Read the stored `current` pointer (out_dir/current.csv), or discover one
-   from out_dir/blocks.csv, or fall back to genesis.
+2. Read the stored `current` pointer (state_dir/current.csv), or discover
+   one from whatever blocks/blocks.csv data exists (state_dir and/or
+   output_dir), or fall back to genesis.
 3. If the stored current block is no longer on the active chain, walk
-   backwards via previousblockhash (out_dir/index/index.csv) until finding
-   the common ancestor, mark the detached range non-canonical in
-   block_status.csv, and log the event under out_dir/reorg/.
+   backwards via previousblockhash (state_dir/index/index.csv) until
+   finding the common ancestor, mark the detached range non-canonical in
+   block_status.csv, and log the event under state_dir/reorg/.
 4. Parse forward from the (possibly rewound) current height up to `latest`,
    skipping any height whose exact blockhash is already in index/ (so a
    block that flips canonical -> noncanonical -> canonical is never
@@ -32,7 +48,9 @@ Loop, per pass:
    wherever it has an entry.
 
 See btc_parser_app.rpc.reorg_state for the state files this reads/writes,
-and Script_plan.md for the full design this implements.
+rpc/part_writer.py for how state_dir/output_dir's blocks/transactions parts
+are written and handed off, and Script_plan.md for the full design this
+implements.
 """
 
 from __future__ import annotations
@@ -47,7 +65,6 @@ from pathlib import Path
 from typing import Any
 
 from btc_parser_app.api.mining_pools_dataset import refresh_if_stale
-from btc_parser_app.common.csv_writer import flush_batch_to_disk
 from btc_parser_app.config import AppConfig, RpcConfig
 from btc_parser_app.rpc.block_parser import aggregate_block
 from btc_parser_app.rpc.client import (
@@ -58,6 +75,7 @@ from btc_parser_app.rpc.client import (
     get_block_verbose,
 )
 from btc_parser_app.rpc.mining_pools import PoolMatcher, load_pool_matcher
+from btc_parser_app.rpc.part_writer import PartSequencer
 from btc_parser_app.rpc.reorg_state import (
     BlockStatusStore,
     IndexStore,
@@ -222,16 +240,36 @@ def _recover_from_reorg(
     return ancestor_height, ancestor_hash
 
 
+def _drain(
+    batch_buffers: dict[str, list[dict[str, Any]]],
+    blocks_seq: PartSequencer,
+    transactions_seq: PartSequencer,
+    atomic: bool,
+) -> None:
+    """Write out whatever's buffered and clear the buffers. atomic=True
+    writes each as a brand-new, complete part (see PartSequencer.write_atomic
+    - used once caught up to the tip, one block at a time); atomic=False
+    appends to the current rotating part (used while there's backlog)."""
+    if atomic:
+        blocks_seq.write_atomic(batch_buffers["blocks"])
+        transactions_seq.write_atomic(batch_buffers["transactions"])
+    else:
+        blocks_seq.write_batched(batch_buffers["blocks"])
+        transactions_seq.write_batched(batch_buffers["transactions"])
+    batch_buffers["blocks"].clear()
+    batch_buffers["transactions"].clear()
+
+
 def _run_one_pass(
     rpc_config: RpcConfig,
     pool_matcher: PoolMatcher | None,
     index: IndexStore,
     block_status: BlockStatusStore,
-    out_dir: Path,
     current_path: Path,
     latest_path: Path,
     reorg_dir: Path,
-    blocks_csv: Path,
+    blocks_seq: PartSequencer,
+    transactions_seq: PartSequencer,
     stop: threading.Event,
 ) -> bool:
     """Run one tip-check-and-catch-up pass. Returns True if the loop should
@@ -253,11 +291,12 @@ def _run_one_pass(
 
     current = read_pointer(current_path)
     if current is None:
-        current = seed_index_from_blocks_csv(index, blocks_csv)
+        current = seed_index_from_blocks_csv(index, blocks_seq.state_base, blocks_seq.export_base)
         if current is not None:
             logger.info(
-                "No current.csv found, but %s has data - resuming from height %d.",
-                blocks_csv,
+                "No current.csv found, but %s/%s has data - resuming from height %d.",
+                blocks_seq.state_base,
+                blocks_seq.export_base,
                 current[0],
             )
 
@@ -288,11 +327,22 @@ def _run_one_pass(
         else None
     )
 
+    # Once the backlog for this pass is within reorg_confirmations, we're
+    # effectively caught up to the tip - switch to writing one atomic,
+    # already-complete part per block (see rpc/part_writer.py) instead of
+    # accumulating into a shared growing part. Reusing reorg_confirmations
+    # rather than a separate knob: it's already the app's existing "how far
+    # behind counts as caught up" threshold (latest_height itself is
+    # tip - reorg_confirmations), so a backlog no bigger than that is at most
+    # a block or two of ordinary tip-following jitter, not a real backlog.
+    atomic_mode = (latest_height - current_height) <= rpc_config.reorg_confirmations
+
     logger.info(
-        "Parsing height %d through %d (%d blocks)...",
+        "Parsing height %d through %d (%d blocks)%s...",
         current_height + 1,
         latest_height,
         latest_height - current_height,
+        " - caught up, writing one part per block" if atomic_mode else "",
     )
     batch_buffers: dict[str, list[dict[str, Any]]] = {"blocks": [], "transactions": []}
     start_time = time.perf_counter()
@@ -311,8 +361,14 @@ def _run_one_pass(
         last_processed_height = height
         processed += 1
 
-        if processed % rpc_config.batch_size == 0:
-            flush_batch_to_disk(batch_buffers, out_dir)
+        if atomic_mode:
+            _drain(batch_buffers, blocks_seq, transactions_seq, atomic=True)
+            index.flush()
+            block_status.flush()
+            write_pointer(current_path, last_processed_height, last_hash)
+            logger.info("Exported block %d (%s) as its own part.", height, last_hash)
+        elif processed % rpc_config.batch_size == 0:
+            _drain(batch_buffers, blocks_seq, transactions_seq, atomic=False)
             index.flush()
             # block_status is flushed before the pointer is advanced: its
             # entries are idempotent to redo (set_canonical_if_present() is a
@@ -332,7 +388,7 @@ def _run_one_pass(
                 bps,
             )
 
-    flush_batch_to_disk(batch_buffers, out_dir)
+    _drain(batch_buffers, blocks_seq, transactions_seq, atomic=atomic_mode)
     index.flush()
     block_status.flush()
     if last_hash is not None:
@@ -362,19 +418,35 @@ def run_rpc_ingest(config: AppConfig) -> None:
     rpc.poll_interval_seconds once caught up."""
     rpc_config = config.rpc
     out_dir = rpc_config.output_dir
+    state_dir = rpc_config.state_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
 
-    index = IndexStore(out_dir / "index" / "index.csv")
-    block_status = BlockStatusStore(out_dir / "block_status.csv")
-    current_path = out_dir / "current.csv"
-    latest_path = out_dir / "latest.csv"
-    reorg_dir = out_dir / "reorg"
-    blocks_csv = out_dir / "blocks.csv"
+    index = IndexStore(state_dir / "index" / "index.csv")
+    block_status = BlockStatusStore(state_dir / "block_status.csv")
+    current_path = state_dir / "current.csv"
+    latest_path = state_dir / "latest.csv"
+    reorg_dir = state_dir / "reorg"
+    # blocks/ and transactions/ are the only things ever written under
+    # out_dir - a part only appears there once it's complete (moved in from
+    # state_dir on rotation, or written there directly once caught up to the
+    # tip - see rpc/part_writer.py) - so a Splunk `batch` input pointed at
+    # out_dir alone, with nothing excluded, is always safe.
+    blocks_seq = PartSequencer(
+        state_dir / "blocks" / "blocks.csv",
+        out_dir / "blocks" / "blocks.csv",
+        state_dir / "blocks_part_seq.csv",
+    )
+    transactions_seq = PartSequencer(
+        state_dir / "transactions" / "transactions.csv",
+        out_dir / "transactions" / "transactions.csv",
+        state_dir / "transactions_part_seq.csv",
+    )
 
     pool_matcher = load_pool_matcher(config.mining_pools_dataset.local_path)
     stop = _install_stop_signal()
 
-    logger.info("rpc-ingest starting - output_dir=%s", out_dir)
+    logger.info("rpc-ingest starting - output_dir=%s state_dir=%s", out_dir, state_dir)
 
     while not stop.is_set():
         # Cheap no-op unless mining_pools_dataset.local_path is missing or
@@ -392,11 +464,11 @@ def run_rpc_ingest(config: AppConfig) -> None:
                 pool_matcher,
                 index,
                 block_status,
-                out_dir,
                 current_path,
                 latest_path,
                 reorg_dir,
-                blocks_csv,
+                blocks_seq,
+                transactions_seq,
                 stop,
             )
         except RpcCliError as exc:

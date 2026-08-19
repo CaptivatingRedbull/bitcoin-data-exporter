@@ -76,7 +76,9 @@ full_app/
   stop.sh                       Stoppt, was start.sh gestartet hat
   run.py                        CLI-Einstiegspunkt
   requirements.txt
-  logs/                         Rotierende *.log-Dateien pro Kommando (werden beim ersten Lauf angelegt)
+  parser-data/                   Alle Laufzeitdaten (wird beim ersten Lauf angelegt) - logs/, state/{rpc,stale}
+                                  (interne Buchführung, nie Splunk-seitig), export/{api,rpc,stale}
+                                  (Splunk-seitig - siehe Konfigurationsabschnitt unten)
   config/
     config.yaml                 Alle Einstellungen für lokale/Dev-Nutzung
     config.production.yaml      Gleiches Schema, zeigt auf die Pfade des Produktions-Pods
@@ -99,6 +101,7 @@ full_app/
       block_parser.py              Block-/Transaktions-JSON zu flachen CSV-Zeilen
       mining_pools.py              Mining-Pool-Extraktor (Tag- und Adressabgleich)
       reorg_state.py               index/, current.csv, latest.csv, block_status.csv, reorg/ - Statusdateien
+      part_writer.py                state_dir->output_dir-Übergabe + atomare Pro-Block-Writes für blocks/transactions
       ingest.py                    Genesis-zu-Tip-Aufholjagd + fortlaufendes reorg-sicheres Tip-Following
       stale_blocks.py               Stale/Orphaned-Chain-Tip-Pipeline ("stale-blocks-ingest")
       stale_blocks_github.py        Zieht das bitcoin-data/stale-blocks-GitHub-Datenset
@@ -199,7 +202,16 @@ Jeder `parser`-Name muss auf eine `parse_<name>`-Funktion in
 `btc_parser_app/api/mempool_endpoints.py` verweisen - ein neuer
 mempool.space-Endpunkt wird durch Schreiben dieser Funktion und Ergänzen
 eines Eintrags hier hinzugefügt, ohne weitere Code-Änderungen. Jeder
-Endpunkt schreibt in seine eigene `<name>.csv` unter `output_dir`.
+Endpunkt schreibt direkt in seine eigene `<name>.csv` unter `output_dir`
+(Standard `parser-data/export/api`) - es gibt für diese Komponente kein
+eigenes State-Verzeichnis, da nichts in dieser Anwendung diese Dateien
+zurückliest, außer `prices.csv` (siehe "Pricing" unten). Splunk sollte hier
+mit einem `monitor`-Input (Tailing, nicht-destruktiv) angebunden werden,
+nicht mit `batch`: anders als bei `rpc.output_dir` sind das einzelne,
+ständig wachsende/rotierende Dateien statt pro Schreibvorgang vollständiger
+Einzeldateien, es gibt also keinen Zeitpunkt, an dem ein `batch`-Input eine
+davon gefahrlos lesen-und-löschen könnte, ohne einen noch wachsenden Teil
+zu erwischen.
 
 Anfragen werden ohne eigenen `User-Agent`-Header gesendet - es gibt kein
 mempool.space-Abo in diesem Setup, gegen das man sich identifizieren
@@ -278,15 +290,21 @@ davon, ob ein voller Batch erreicht wurde. Beim Tip-Following (wo ein
 Durchlauf oft nur den einen neuen Block umfasst) wird also **nicht** auf
 20 Blöcke gewartet, bevor Daten persistiert werden - `batch_size` steuert
 nur, wie oft die "Progress: height X/Y"-Logzeile und der Zwischen-Checkpoint
-während einer langen Aufholjagd feuern. `output_dir` (Standard
-`out_trimmed`) ist der Ort für alle RPC-seitigen Dateien: `blocks.csv`,
-`transactions.csv` und sämtliche Reorg-Statusdateien.
+während einer langen Aufholjagd feuern. `output_dir`/`state_dir` (Standard
+`parser-data/export/rpc` und `parser-data/state/rpc`) trennen genau wie bei
+`stale_blocks` unten: `output_dir` enthält nur `blocks/` und
+`transactions/`, und dort erscheint nie etwas, das noch beschrieben wird -
+siehe "Dateirotation" unten. `state_dir` enthält alles Interne -
+`current.csv`, `latest.csv`, `index/`, `block_status.csv`, `reorg/`, die
+`*_part_seq.csv`-Zähler und, solange Backlog besteht, den gerade noch
+wachsenden `blocks/`/`transactions/`-Part selbst. Splunk sollte nur auf
+`output_dir` zeigen, mit einem `batch`-Input - nie auf `state_dir`.
 
 ### `stale_blocks`
 
 Konfiguration für `stale-blocks-ingest`: `output_dir` (Splunk-seitige
-Exporte, Standard `out_stale_blocks`) und `state_dir` (nur interne
-Buchführung, Standard `state/stale_blocks`) sind bewusst getrennt.
+Exporte, Standard `parser-data/export/stale`) und `state_dir` (nur interne
+Buchführung, Standard `parser-data/state/stale`) sind bewusst getrennt.
 `node_poll_interval_seconds` (Standard stündlich) steuert den
 `getchaintips`-Durchlauf; `github.poll_interval_seconds` (Standard
 täglich) steuert den Abruf des `bitcoin-data/stale-blocks`-GitHub-CSV -
@@ -296,21 +314,47 @@ nicht-aktive Tips, `rpc-ingest` die aktive Chain).
 
 ### Dateirotation
 
-Jede Append-only-CSV dieser Anwendung (`blocks.csv`, `transactions.csv`,
-`index/index.csv`, `peer_attempts.csv`, die Stale-Blocks-Exporte,
-jede mempool.space-Endpunkt-CSV inklusive `prices.csv`) wächst unbegrenzt,
-daher deckelt `common/csv_writer.py` jeden Dateipart auf ~900 MB und rollt
-vor Überschreiten in einen neuen nummerierten Part: `blocks.csv` ist der
-erste Part, danach `blocks.000002.csv`, `blocks.000003.csv` usw., im
-selben Verzeichnis. Am Layout ändert sich sonst nichts - es bleibt
-logisch eine CSV, nur aufgeteilt in Dateien, die nie 1 GB überschreiten.
-Alles in der Anwendung, das eine logische CSV vollständig zurücklesen
-muss (der Index, `peer_attempts.csv`, das Bootstrapping aus `blocks.csv`),
-liest automatisch alle Parts in Reihenfolge. Wer ein externes Tool
-(Splunk, eine Monitor-Stanza, Ad-hoc-Skripte) direkt auf diese Dateien
-ansetzt, sollte auf `<name>*.csv` globben statt auf den exakten ersten
-Dateinamen - siehe Abschnitt 11 zum Zusammenspiel mit einem begrenzten
-Speicherbudget.
+Jede Append-only-CSV dieser Anwendung (`index/index.csv`,
+`peer_attempts.csv`, die Stale-Blocks-Exporte, jede mempool.space-Endpunkt-
+CSV inklusive `prices.csv`, sowie `blocks.csv`/`transactions.csv` solange
+Backlog besteht - siehe unten) wächst unbegrenzt, daher deckelt
+`common/csv_writer.py` jeden Dateipart auf ~900 MB und rollt vor
+Überschreiten in einen neuen nummerierten Part: `<name>.csv` ist der erste
+Part, danach `<name>.000002.csv`, `<name>.000003.csv` usw., im selben
+Verzeichnis. Am Layout ändert sich sonst nichts - es bleibt logisch eine
+CSV, nur aufgeteilt in Dateien, die nie 1 GB überschreiten. Alles in der
+Anwendung, das eine logische CSV vollständig zurücklesen muss (der Index,
+`peer_attempts.csv`, das Bootstrapping aus `blocks/blocks.csv`), liest
+automatisch alle Parts in Reihenfolge. Wer ein externes Tool (Splunk, eine
+Monitor-Stanza, Ad-hoc-Skripte) direkt auf diese Dateien ansetzt, sollte auf
+`<name>*.csv` globben statt auf den exakten ersten Dateinamen - siehe
+Abschnitt 11 zum Zusammenspiel mit einem begrenzten Speicherbudget.
+
+`blocks/blocks*.csv` und `transactions/transactions*.csv` sind ein
+Sonderfall, über `rpc/part_writer.py` - zusätzlich dazu, dass sie über zwei
+Verzeichnisse verteilt sind (`rpc.state_dir`/`rpc.output_dir` - siehe oben):
+Solange `rpc-ingest` Backlog über `rpc.reorg_confirmations` hinaus hat,
+sammeln sich Zeilen im aktuellen Part *unter `state_dir`*, größenbasiert
+rotierend wie jede andere CSV oben - und sobald ein Part durch Rotation
+abgelöst wird (oder durch den atomaren Modus unten), wird er als Ganzes
+nach `output_dir` verschoben (ein Rename auf demselben Dateisystem, atomar)
+und nie wieder beschrieben. Ein Part erscheint also erst unter `output_dir`,
+wenn er vollständig fertig ist - nichts Wachsendes ist dort je sichtbar, in
+keinem der beiden Modi. Sobald der Backlog eines Durchlaufs innerhalb von
+`reorg_confirmations` liegt (also der Tip nicht nur eingeholt wird, sondern
+eingeholt ist), bekommt stattdessen jeder Block seinen eigenen, bereits
+vollständigen Part direkt in `output_dir` - ein neues `blocks.NNNNNN.csv`/
+`transactions.NNNNNN.csv` pro Block, geschrieben über eine temporäre Datei
+plus atomares Rename, ohne `state_dir` je zu berühren. So oder so muss ein
+Splunk-`batch`-Input (destruktiv, liest und löscht) auf `output_dir` nie auf
+`monitor` umgestellt werden, egal ob Backfill oder stationäres
+Tip-Following (siehe "Storage-Strategie und Splunk-Anbindung") - es gibt
+nichts auszuschließen und nichts umzustellen. Die Part-Nummerierung ist
+über beide Modi hinweg gemeinsam und dauerhaft (persistiert in
+`state_dir/blocks_part_seq.csv`/`state_dir/transactions_part_seq.csv`,
+nicht durch Verzeichnis-Scan ermittelt) - genau damit sie es übersteht,
+wenn Splunk ältere Parts aus `output_dir` löscht, und in keinem Modus, über
+Neustarts hinweg, eine Nummer wiederverwendet oder kollidiert.
 
 `reorg_confirmations` (Standard 6), `max_reorg_depth` (Standard 100) und
 `poll_interval_seconds` (Standard 30 - Wartezeit zwischen Tip-Checks im
@@ -347,8 +391,8 @@ Blockhash als eindeutige Identität. Jeder Durchlauf:
    Blöcke angesammelt haben (siehe die Anmerkung zu `rpc.batch_size`
    oben).
 
-Statusdateien (alle unter `rpc.output_dir`, neben `blocks.csv` /
-`transactions.csv`):
+Statusdateien (alle unter `rpc.state_dir` - nie unter `output_dir`, das nur
+die fertigen `blocks/`/`transactions/`-Exporte enthält):
 
 - `index/index.csv` - unveränderliches, Append-only-Protokoll jedes
   jemals exportierten Blocks (`height,blockhash,previousblockhash`).
@@ -385,13 +429,15 @@ Anhalten von `api-poll` bei einem 429.
   startet bei Höhe 0 und holt bis zum Tip auf.
 - **`current.csv` vorhanden**: macht genau dort weiter - zuvor wie oben
   auf Reorg geprüft.
-- **`current.csv` fehlt, `blocks.csv` hat aber Daten** (z. B. gelöscht,
-  oder `output_dir` wurde anderweitig befüllt und hat nie ein
-  `current.csv` bekommen): liest die eigenen
-  `height`/`hash`/`previousblockhash`-Spalten aus `blocks.csv`, um
-  `index/` neu aufzubauen, und macht ab dem höchsten gefundenen Block
-  weiter, statt diese Arbeit zu verlieren und ab Genesis neu zu
-  beginnen.
+- **`current.csv` fehlt, `blocks.csv`-Daten existieren aber** (unter
+  `state_dir` und/oder `output_dir` - z. B. `current.csv` wurde gelöscht,
+  oder diese Verzeichnisse wurden anderweitig befüllt und haben nie ein
+  `current.csv` bekommen): liest alle noch vorhandenen `blocks.csv`-Parts
+  aus beiden Verzeichnissen, deren `height`/`hash`/`previousblockhash`-
+  Spalten, um `index/` neu aufzubauen, und macht ab dem höchsten
+  gefundenen Block weiter, statt diese Arbeit zu verlieren und ab Genesis
+  neu zu beginnen. Best-effort - `output_dir` ist Splunk-seitig, ältere
+  Parts können also zu diesem Zeitpunkt schon weg sein.
 
 ## Mining-Pool-Zuordnung
 
@@ -497,70 +543,74 @@ Bitcoin-Core-Datenverzeichnis teilt:
 | Betriebssystem u. Ä. | ~20 GB | |
 | Verbleibend für Exporte/Puffer | Rest | begrenzt und **nicht** für dauerhafte Aufbewahrung der Exportdateien gedacht |
 
-Die exportierten CSV-Dateien (`blocks.csv`, `transactions.csv`,
-die mempool.space-Endpunkt-CSVs (inklusive `prices.csv`), die Stale-Blocks-
-Exporte) sind also nicht als dauerhafter Datenspeicher auf diesem Host
-gedacht - Splunk (oder was auch immer sie konsumiert) muss sie zeitnah
-tatsächlich abholen.
+Die exportierten CSV-Dateien (`export/rpc/{blocks,transactions}/`, die
+mempool.space-Endpunkt-CSVs unter `export/api/` inklusive `prices.csv`, die
+Stale-Blocks-Exporte unter `export/stale/`) sind also nicht als dauerhafter
+Datenspeicher auf diesem Host gedacht - Splunk (oder was auch immer sie
+konsumiert) muss sie zeitnah tatsächlich abholen.
 
 ### Rolle dieser Anwendung
 
-Die Anwendung bleibt bei diesem Thema bewusst passiv: Sie rotiert jede
-logische CSV in ~900-MB-Teile (siehe "Dateirotation" oben) und fasst eine
-einmal geschriebene Datei danach nie mehr an, verschiebt oder löscht sie
-nie. **Welcher rotierte Teil wann gelöscht werden darf, ist eine
-Entscheidung, die außerhalb dieser Anwendung getroffen wird** - über die
-Splunk-Input-Konfiguration (`inputs.conf`) oder ein eigenes,
-manuell/per Cron ausgeführtes Aufräum-Skript, nachdem verifiziert wurde,
-dass Splunk die Datei tatsächlich indiziert hat. Es gibt in der Anwendung
-absichtlich **keinen** automatischen Lösch-/Verschiebe-Mechanismus - ein
-Konfigurationsfehler bei einer Selbstlöschung wäre eine Fehlkonfiguration
-von Splunk entfernt davon, unwiederbringliche Daten zu verlieren (ein
-erneuter Parse-Lauf ab Genesis ist teuer; ein erneuter Abruf der
-historischen Preis-/API-Daten unter Umständen gar nicht mehr möglich).
+Die Anwendung bleibt bei diesem Thema bewusst passiv: Sie fasst eine Datei,
+die sie einmal in ein Splunk-seitiges `export/`-Verzeichnis übergeben hat,
+danach nie mehr an, verschiebt oder löscht sie nie. **Welcher rotierte Teil
+wann gelöscht werden darf, ist eine Entscheidung, die außerhalb dieser
+Anwendung getroffen wird** - über die Splunk-Input-Konfiguration
+(`inputs.conf`) oder ein eigenes, manuell/per Cron ausgeführtes
+Aufräum-Skript, nachdem verifiziert wurde, dass Splunk die Datei
+tatsächlich indiziert hat. Es gibt in der Anwendung absichtlich **keinen**
+automatischen Lösch-/Verschiebe-Mechanismus - ein Konfigurationsfehler bei
+einer Selbstlöschung wäre eine Fehlkonfiguration von Splunk entfernt davon,
+unwiederbringliche Daten zu verlieren (ein erneuter Parse-Lauf ab Genesis
+ist teuer; ein erneuter Abruf der historischen Preis-/API-Daten unter
+Umständen gar nicht mehr möglich).
 
-### Zwei Splunk-Input-Modi, die die Rotation unterstützt
+### Zwei feste Splunk-Eingabemodi - je Verzeichnis, nie umzustellen
 
-Die 900-MB-Rotation ist bewusst so gewählt, dass sich zwischen beiden
-Splunk-Eingabemodi wechseln lässt, ohne etwas an dieser Anwendung zu
-ändern:
+`parser-data/` ist bewusst in zwei Verzeichnisarten aufgeteilt (siehe
+"Verzeichnisstruktur" oben), genau damit sich jedes `export/`-Unterverzeichnis
+dauerhaft mit einem einzigen Input-Modus betreiben lässt - kein Umstellen
+zwischen Backfill und stationärem Betrieb, kein Ausschließen der jeweils
+neuesten Datei, keine Konfigurationsdisziplin nötig:
 
-- **Bulk-Aufholjagd (Genesis-Backfill oder eine große Lücke):** Ein
-  `batch`-Input (Sinkhole) auf `rpc.output_dir` zeigen lassen - dieser
-  liest eine abgeschlossene Datei einmal ein und löscht/verschiebt sie
-  danach ("destruktiv"). Das ist hier sicher, weil ein rotierter Teil
-  (`blocks.000004.csv` usw.) nie wieder angehängt wird, sobald der nächste
-  Teil begonnen hat - er ist in dem Moment, in dem er nicht mehr der
-  neueste ist, eine abgeschlossene, vollständige Datei. Genau dafür ist
-  die 900-MB-Deckelung gewählt (deutlich unter üblichen
-  Forwarder-Größenlimits) - jeder Teil ist eine Einheit, die ein
-  `batch`-Input als Ganzes konsumieren kann.
-- **Stationäres Tip-Following:** Ist einmal aufgeholt, trudeln neue Daten
-  deutlich langsamer ein, wodurch dieselbe Rotation deutlich seltenere,
-  kleinere Teile erzeugt. Hier lässt sich entweder weiterhin `batch`
-  verwenden (weiterhin sicher, aus demselben Grund wie oben - nur eine
-  niedrigere Rate kleiner, abgeschlossener Dateien), oder der aktuell noch
-  wachsende Teil lässt sich auf einen `monitor`-Input (nicht-destruktives
-  Tailing) umstellen, falls Splunk auf diesem Host gar nichts automatisch
-  löschen soll; `monitor`-Inputs löschen nie, alte rotierte Teile müssten
-  dann manuell (oder per eigenem Cron-Job) aufgeräumt werden, sobald die
-  Indizierung durch Splunk bestätigt ist. Die Anwendung selbst trifft hier
-  keine Annahme in die eine oder andere Richtung.
+- **`export/rpc/{blocks,transactions}/` - `batch` (Sinkhole,
+  liest und löscht).** Ein Teil erscheint hier erst, wenn er vollständig
+  fertig ist - während der Backlog-Aufholjagd wird er als Ganzes aus
+  `state/rpc/` übernommen, sobald er durch Rotation abgelöst wird (nie
+  während er noch beschrieben wird); ist der Tip eingeholt, wird jeder
+  Block-Teil direkt hier geschrieben, bereits vollständig (siehe
+  "Dateirotation" oben). So oder so ist dort nie etwas Wachsendes
+  sichtbar - ein `batch`-Input kann alles, was er dort findet, jederzeit
+  konsumieren und löschen, ohne Ausnahme.
+- **`export/api/` und `export/stale/` - `monitor` (nicht-destruktives
+  Tailing).** Das sind keine atomaren Pro-Block-Writes - jede Endpunkt-CSV
+  (inklusive `prices.csv`) und die Stale-Tip-Exporte sind je eine einzelne
+  Datei, die beschrieben und größenbasiert rotiert wird wie jede andere CSV
+  in dieser Anwendung (siehe "Dateirotation" oben), der aktuelle Teil ist
+  also immer noch am Wachsen. Ein `batch`-Input würde hier riskieren, genau
+  diese noch wachsende Datei zu erwischen. `monitor` löscht nie, alte
+  rotierte Teile müssen also selbst aufgeräumt werden (von Hand oder per
+  Cron-Job), sobald die Indizierung durch Splunk bestätigt ist - und für
+  `export/api/prices.csv` ist das nicht nur die sicherere Voreinstellung:
+  `import-price-history` liest die volle Historie dieser Datei zum
+  Deduplizieren zurück (siehe "Pricing" oben), sie darf also grundsätzlich
+  nie unter dieser Anwendung weggelöscht werden.
 
 ### Empfehlung
 
-Für den produktiven 1-TB-Host: `batch`-Input während der initialen
-Genesis-Aufholjagd (großes Datenvolumen, viele abgeschlossene Teile, wo
-"destruktiv nach Indizierung" den größten Speicher-Druck nimmt), danach
-je nach Splunk-Betriebsmodell entweder bei `batch` bleiben oder auf
-`monitor` + eigenes, verifiziertes Cleanup umstellen. Diese Entscheidung
-sollte zusammen mit dem Splunk-Betrieb getroffen und in der jeweiligen
-`inputs.conf` dokumentiert werden - nicht in dieser Anwendung.
+Für den produktiven 1-TB-Host: `batch`-Input auf `export/rpc/` dauerhaft,
+sowohl während der initialen Genesis-Aufholjagd als auch danach im
+stationären Betrieb - hier ist nichts umzustellen. Für `export/api/` und
+`export/stale/` ein `monitor`-Input mit eigenem, verifiziertem Cleanup.
+Diese Entscheidung sollte zusammen mit dem Splunk-Betrieb getroffen und in
+der jeweiligen `inputs.conf` dokumentiert werden - nicht in dieser
+Anwendung. In keinem Fall sollte ein Splunk-Input auf ein `state/`-
+Verzeichnis zeigen.
 
 ## Logging
 
-`logging.level` (Standard `INFO`) und `logging.log_dir` (Standard `logs`,
-relativ zu `full_app/`) steuern das Logging. Jedes Kommando loggt sowohl
+`logging.level` (Standard `INFO`) und `logging.log_dir` (Standard
+`parser-data/logs`, relativ zu `full_app/`) steuern das Logging. Jedes Kommando loggt sowohl
 nach stdout als auch in eine rotierende Datei unter
 `log_dir/<kommando>.log` (20 MB pro Datei, 5 aufgehoben) - darauf stützt
 sich die Sichtbarkeit der Hintergrunddienste von `start.sh`, da deren
