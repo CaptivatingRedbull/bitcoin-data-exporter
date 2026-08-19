@@ -4,28 +4,28 @@ dicts ready for CSV export.
 Ported from rpc_parser_modified.py, with two additions for the mining pool
 extractor (btc_parser_app.rpc.mining_pools):
 
-- aggregate_transaction now also collects the coinbase transaction's output
-  addresses (coinbase_output_addresses_json), needed for address-based pool
-  matching.
+- aggregate_transaction also returns the coinbase transaction's scriptSig
+  hex and output addresses as a side channel (not exported to CSV - see
+  below), needed for tag/address-based pool matching.
 - aggregate_block takes an optional PoolMatcher and, when given one,
   attaches pool_id/pool_name/pool_link/pool_match_method to the block event.
 
 vin/vout are still fully inspected here, but their individual rows are not
-exported - only scalar aggregate fields make it into the CSV. The one
-intentional exception is coinbase_script_sig_hex: consensus limits the
-coinbase scriptSig to a small size, and it's useful for miner/BIP34/
-extranonce analysis (and is exactly what the pool tag match reads).
+exported - only scalar aggregate fields make it into the CSV. The raw
+coinbase scriptSig/output-addresses used for pool matching are deliberately
+NOT among them: once pool_id/pool_name land on the block row, the raw
+fields have no remaining downstream use, so aggregate_transaction returns
+them separately from the exported event dict instead of writing them to
+transactions.csv.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import statistics
 from decimal import Decimal
 from typing import Any
 
-from btc_parser_app.common.json_utils import json_dumps_compact
 from btc_parser_app.config import RpcConfig
 from btc_parser_app.rpc.mining_pools import UNKNOWN_MATCH, PoolMatch, PoolMatcher
 
@@ -111,7 +111,11 @@ def aggregate_transaction(
     block_time: int,
     tx_index: int,
     config: RpcConfig,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str | None, list[str]]:
+    """Returns (event, coinbase_script_sig_hex, coinbase_output_addresses).
+    The latter two are only non-empty for the coinbase transaction and exist
+    purely to feed the mining pool matcher in aggregate_block - they are not
+    part of the exported event dict (see module docstring)."""
     vins = tx.get("vin") or []
     vouts = tx.get("vout") or []
 
@@ -213,8 +217,10 @@ def aggregate_transaction(
     input_value_sats = sum(input_values_sats) if input_values_sats else 0
     output_value_sats = sum(output_values_sats) if output_values_sats else 0
 
+    # Not exported - only used below to pick fee_source, and by
+    # aggregate_block's input_value_known_txs filter (recomputed there from
+    # the exported prevout_value_known_count/vin_count/is_coinbase fields).
     prevout_values_complete = is_coinbase or prevout_value_known_count == len(vins)
-    prevout_heights_complete = is_coinbase or prevout_height_known_count == len(vins)
 
     rpc_fee = tx.get("fee")
     if is_coinbase:
@@ -270,14 +276,21 @@ def aggregate_transaction(
     if is_coinbase and vins:
         coinbase_script_sig_hex = vins[0].get("coinbase")
 
+    txid = tx.get("txid")
+    wtxid = tx.get("hash")
+
     event: dict[str, Any] = {
         # Identity / block relationship
         "block_hash": block_hash,
         "block_height": block_height,
         "block_time": block_time,
         "tx_index": tx_index,
-        "txid": tx.get("txid"),
-        "wtxid": tx.get("hash"),
+        "txid": txid,
+        # Null whenever wtxid == txid (every non-witness transaction) rather
+        # than repeating the 64-char hash - reconstruct with
+        # coalesce(wtxid, txid) downstream. Only witness transactions (where
+        # the two genuinely differ) pay for this column.
+        "wtxid": wtxid if wtxid != txid else None,
         "is_coinbase": is_coinbase,
         # Native transaction metadata
         "version": tx.get("version"),
@@ -307,8 +320,6 @@ def aggregate_transaction(
         "vout_count": len(vouts),
         "prevout_value_known_count": prevout_value_known_count,
         "prevout_height_known_count": prevout_height_known_count,
-        "prevout_values_complete": prevout_values_complete,
-        "prevout_heights_complete": prevout_heights_complete,
         "generated_input_count": generated_input_count,
         # Input age / coin age
         "input_age_min_blocks": min(input_ages_blocks) if input_ages_blocks else None,
@@ -317,7 +328,6 @@ def aggregate_transaction(
         "input_age_value_weighted_avg_blocks": input_age_value_weighted_avg,
         "coin_days_destroyed_btc": coin_days_destroyed_btc,
         # Witness / script aggregate KPIs
-        "has_witness": witness_input_count > 0,
         "witness_input_count": witness_input_count,
         "witness_item_count": witness_item_count,
         "witness_data_bytes": witness_data_bytes,
@@ -327,21 +337,12 @@ def aggregate_transaction(
         "op_return_count": op_return_count,
         "op_return_script_bytes": op_return_script_bytes,
         "zero_value_output_count": zero_value_output_count,
-        # Small, bounded and useful special-case fields (coinbase only)
-        "coinbase_script_sig_hex": coinbase_script_sig_hex,
-        "coinbase_output_addresses_json": (
-            json_dumps_compact(coinbase_output_addresses) if is_coinbase else None
-        ),
     }
 
     event.update(vin_type_counts)
     event.update(vout_type_counts)
 
-    event["has_taproot_input"] = event["vin_type_witness_v1_taproot_count"] > 0
-    event["has_taproot_output"] = event["vout_type_witness_v1_taproot_count"] > 0
-    event["has_op_return"] = op_return_count > 0
-
-    return event
+    return event, coinbase_script_sig_hex, coinbase_output_addresses
 
 
 # ==============================================================================
@@ -350,14 +351,13 @@ def aggregate_transaction(
 
 
 def _match_mining_pool(
-    coinbase_tx: dict[str, Any] | None, pool_matcher: PoolMatcher | None
+    coinbase_script_sig_hex: str | None,
+    coinbase_output_addresses: list[str],
+    pool_matcher: PoolMatcher | None,
 ) -> PoolMatch:
-    if pool_matcher is None or coinbase_tx is None:
+    if pool_matcher is None:
         return UNKNOWN_MATCH
-
-    addresses_json = coinbase_tx.get("coinbase_output_addresses_json")
-    addresses: list[str] = json.loads(addresses_json) if addresses_json else []
-    return pool_matcher.match(coinbase_tx.get("coinbase_script_sig_hex"), addresses)
+    return pool_matcher.match(coinbase_script_sig_hex, coinbase_output_addresses)
 
 
 def aggregate_block(
@@ -377,8 +377,11 @@ def aggregate_block(
     block_height = int(block["height"])
     block_time = int(block["time"])
 
-    tx_events = [
-        aggregate_transaction(
+    tx_events: list[dict[str, Any]] = []
+    coinbase_script_sig_hex: str | None = None
+    coinbase_output_addresses: list[str] = []
+    for tx_index, tx in enumerate(block.get("tx") or []):
+        event, cb_script_sig_hex, cb_addresses = aggregate_transaction(
             tx,
             block_hash=block_hash,
             block_height=block_height,
@@ -386,13 +389,17 @@ def aggregate_block(
             tx_index=tx_index,
             config=config,
         )
-        for tx_index, tx in enumerate(block.get("tx") or [])
-    ]
+        tx_events.append(event)
+        if tx_index == 0:
+            coinbase_script_sig_hex = cb_script_sig_hex
+            coinbase_output_addresses = cb_addresses
 
     regular_txs = [tx for tx in tx_events if not tx["is_coinbase"]]
     coinbase_tx = tx_events[0] if tx_events else None
 
-    pool_match = _match_mining_pool(coinbase_tx, pool_matcher)
+    pool_match = _match_mining_pool(
+        coinbase_script_sig_hex, coinbase_output_addresses, pool_matcher
+    )
 
     known_fees = [
         int(tx["fee_sats"]) for tx in regular_txs if tx["fee_sats"] is not None
@@ -407,7 +414,11 @@ def aggregate_block(
     total_fees_sats = sum(known_fees)
     total_regular_vsize = sum(regular_vsizes)
 
-    input_value_known_txs = [tx for tx in regular_txs if tx["prevout_values_complete"]]
+    # regular_txs excludes the coinbase tx, so prevout_values_complete's
+    # is_coinbase branch never applies here - just compare the two counts.
+    input_value_known_txs = [
+        tx for tx in regular_txs if tx["prevout_value_known_count"] == tx["vin_count"]
+    ]
 
     block_event: dict[str, Any] = {
         # Original block fields
@@ -502,16 +513,19 @@ def aggregate_block(
         "tx_vsize_max": (
             max(int(tx["vsize"] or 0) for tx in tx_events) if tx_events else None
         ),
-        # Feature adoption / behavior
-        "segwit_tx_count": sum(bool(tx["has_witness"]) for tx in tx_events),
+        # Feature adoption / behavior - each derived from an already-summed
+        # count field rather than a per-tx boolean, since has_witness/
+        # has_taproot_input/has_taproot_output/has_op_return were dropped
+        # from the exported transaction row as pure duplicates of these.
+        "segwit_tx_count": sum(int(tx["witness_input_count"]) > 0 for tx in tx_events),
         "rbf_tx_count": sum(bool(tx["signals_rbf"]) for tx in regular_txs),
         "taproot_input_tx_count": sum(
-            bool(tx["has_taproot_input"]) for tx in regular_txs
+            int(tx["vin_type_witness_v1_taproot_count"]) > 0 for tx in regular_txs
         ),
         "taproot_output_tx_count": sum(
-            bool(tx["has_taproot_output"]) for tx in tx_events
+            int(tx["vout_type_witness_v1_taproot_count"]) > 0 for tx in tx_events
         ),
-        "op_return_tx_count": sum(bool(tx["has_op_return"]) for tx in tx_events),
+        "op_return_tx_count": sum(int(tx["op_return_count"]) > 0 for tx in tx_events),
         "op_return_output_count": sum(int(tx["op_return_count"]) for tx in tx_events),
         "op_return_script_bytes": sum(
             int(tx["op_return_script_bytes"]) for tx in tx_events

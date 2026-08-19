@@ -16,13 +16,14 @@ Commands:
                             bitcoin-data/stale-blocks GitHub dataset -> out_stale_blocks/).
                             Separate sourcetype from rpc-ingest's main-chain output. Runs until
                             SIGTERM/SIGINT.
-    api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM).
-                            Also runs the price_daily.csv gap-filler (see pricing.backfill in
-                            config.yaml) sharing the same rate-limit budget.
+    api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM),
+                            including the minutely "prices" endpoint that writes
+                            mempool_api.output_dir/prices.csv.
     update-pools-dataset    Force-refresh config/pools-v2.json from GitHub
-    import-kraken-prices    One-time (idempotent) bulk import of pricing.kraken.csv_path into
-                            pricing.output_dir/price_daily.csv - run this before api-poll to give
-                            the gap-filler a running start (see README.md's Pricing section).
+    import-price-history    One-time (idempotent) bulk import of pricing.xbtusd_csv_path/
+                            pricing.xbteur_csv_path (Kraken 1-minute OHLC exports) into
+                            mempool_api.output_dir/prices.csv - the same minutely file api-poll
+                            appends to live (see README.md's Pricing section).
 
 For always-on production use, don't invoke this directly - use ../start.sh,
 which also makes sure bitcoind is up first and runs both long-running
@@ -41,9 +42,9 @@ import sys
 import yaml
 
 from btc_parser_app.api.client import FetchError, RateLimited
-from btc_parser_app.api.kraken_import import import_kraken_csv
 from btc_parser_app.api.mining_pools_dataset import refresh as refresh_pools_dataset
 from btc_parser_app.api.poller import run_poller
+from btc_parser_app.api.price_history_import import import_price_history
 from btc_parser_app.common.logging_setup import configure_logging
 from btc_parser_app.config import ConfigError, load_config
 from btc_parser_app.rpc.ingest import run_rpc_ingest
@@ -81,8 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
         "update-pools-dataset", help="Force-refresh config/pools-v2.json from GitHub"
     )
     subparsers.add_parser(
-        "import-kraken-prices",
-        help="One-time (idempotent) bulk import of the Kraken OHLC CSV into price_daily.csv",
+        "import-price-history",
+        help="One-time (idempotent) bulk import of the Kraken minute CSVs into prices.csv",
     )
 
     return parser
@@ -118,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         # SIGTERM, so route that through the same handler for a clean stop
         # instead of an abrupt kill.
         signal.signal(signal.SIGTERM, signal.default_int_handler)
-        return run_poller(config.mempool_api, pricing_config=config.pricing)
+        return run_poller(config.mempool_api)
 
     if args.command == "update-pools-dataset":
         try:
@@ -128,11 +129,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    if args.command == "import-kraken-prices":
+    if args.command == "import-price-history":
+        prices_path = config.mempool_api.output_dir / "prices.csv"
         try:
-            import_kraken_csv(config.pricing)
+            import_price_history(config.pricing, prices_path)
         except (FileNotFoundError, ValueError) as exc:
-            print(f"Failed to import Kraken prices: {exc}", file=sys.stderr)
+            print(f"Failed to import price history: {exc}", file=sys.stderr)
             return 1
         return 0
 

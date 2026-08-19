@@ -93,50 +93,23 @@ mining_pools_dataset:
   refresh_interval_seconds: 604800
 
 # -----------------------------------------------------------------------
-# BTC/USD daily pricing: a one-time bulk import of a Kraken historical CSV,
-# plus an automatic gap-filler that keeps price_daily.csv caught up to
-# "yesterday" (and re-catches-up after any downtime) against mempool.space's
-# historical-price endpoint. Both write into pricing.output_dir/
-# price_daily.csv - one row per calendar day (UTC), tagged with which
-# source produced it.
+# BTC price history: a one-time bulk import of two Kraken 1-minute OHLC
+# exports (one per currency pair) into mempool_api.output_dir/prices.csv -
+# the exact same file the "prices" endpoint above appends to live, every
+# 60s. Both writers produce the same row shape (date_unix, usd, eur), so
+# historic and live-polled data end up in one minutely file with no
+# separate daily table to reconcile.
 # -----------------------------------------------------------------------
 pricing:
-  output_dir: "out_prices"
-
-  kraken:
-    # Point this at a Kraken OHLC/candle export (their historical-data
-    # downloads, e.g. the "XBTUSD_1440.csv" file - 1440 = minutes per day,
-    # i.e. daily candles). No header row; columns are
-    # unix_timestamp,open,high,low,close,volume,trades. Run
-    # `python run.py import-kraken-prices` once after placing the file here
-    # - it's idempotent (skips days already imported by date), so re-running
-    # against a refreshed/extended export only adds what's new. Until this
-    # file exists, import-kraken-prices just errors with where to put it -
-    # the gap-filler below works independently and doesn't need this to run
-    # first, it just has more ground to cover without it (see start_date).
-    csv_path: "config/kraken_xbtusd_daily.csv"
-
-  backfill:
-    # Runs inside api-poll as an extra background loop sharing
-    # mempool_api's token bucket above (NOT a separate rate-limit budget) -
-    # it only ever fires in the gaps between the regular endpoint polls, so
-    # it never delays fees_precise/mempool/prices/etc. Every
-    # request_interval_seconds it looks for the single oldest missing UTC
-    # day in price_daily.csv (starting from start_date if the Kraken import
-    # has never been run) and fetches just that one day. Once caught up
-    # through yesterday it goes idle (no requests) until a new gap appears
-    # - which is exactly what happens after any downtime, so this is also
-    # what gives price_daily.csv gap-free coverage across a crash/restart
-    # without any special-casing.
-    endpoint_path: "/api/v1/historical-price"
-    currency: "USD"
-    request_interval_seconds: 5
-    # Floor for how far back to backfill when price_daily.csv has no Kraken
-    # data yet - deep history is Kraken's job (see kraken.csv_path above),
-    # this is only meant to cover the recent gap up to now. Matches
-    # Script_plan.md's original "01.01.26 -> now" scope; move it earlier
-    # once you've actually run import-kraken-prices and no longer need it.
-    start_date: "2026-01-01"
+  # Point these at Kraken's historical-data downloads for the "_1" (1-minute
+  # candle) interval. No header row; columns are
+  # unix_timestamp,open,high,low,close,volume,trades - only the close price
+  # is kept. Run `python run.py import-price-history` once after placing
+  # both files here - it's idempotent (skips minutes already in
+  # prices.csv), so re-running against a refreshed/extended export only
+  # adds what's new.
+  xbtusd_csv_path: "config/XBTUSD_1.csv"
+  xbteur_csv_path: "config/XBTEUR_1.csv"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md).

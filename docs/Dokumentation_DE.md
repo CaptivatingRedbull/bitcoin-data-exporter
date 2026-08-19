@@ -17,7 +17,7 @@
 7. [Konfiguration (config.yaml)](#konfiguration-configyaml)
 8. [RPC-Parser: Reorg-Handling](#rpc-parser-reorg-handling)
 9. [Mining-Pool-Zuordnung](#mining-pool-zuordnung)
-10. [Pricing: Kraken-Import und Lückenfüllung](#pricing-kraken-import-und-lückenfüllung)
+10. [Pricing: minütliche Preishistorie](#pricing-minütliche-preishistorie)
 11. [Storage-Strategie und Splunk-Anbindung](#storage-strategie-und-splunk-anbindung)
 12. [Logging](#logging)
 13. [Bekannte Einschränkungen / offene Punkte](#bekannte-einschränkungen--offene-punkte)
@@ -37,9 +37,9 @@ Tool, das CSV-Dateien einlesen kann) aufbereitet:
 - **Netzwerk-/Marktdaten** von der öffentlichen mempool.space-HTTP-API -
   aktuelle Gebühren, Mempool-Zustand, Preise, Difficulty-Adjustment,
   Pool-Hashrate-Anteile.
-- **Historische Preisdaten** aus einem Kraken-CSV-Export plus einer
-  automatischen Lückenfüllung über die mempool.space-API (siehe Abschnitt
-  10).
+- **Historische Preisdaten** minütlich, aus zwei Kraken-1-Minuten-CSV-
+  Exporten (USD und EUR) importiert in genau dieselbe `prices.csv`, die
+  auch der Live-Poller schreibt (siehe Abschnitt 10).
 
 Die Anwendung besteht bewusst aus **drei unabhängigen, dauerhaft
 laufenden Prozessen** statt einem einzigen Multithreading-Skript. Sie
@@ -56,7 +56,7 @@ verdrahtet.
 |---|---|---|
 | RPC-Parser | `rpc-ingest` | Holt Blöcke vom eigenen Node, flacht sie inkl. aller Transaktionen zu CSV-Zeilen ab, ordnet jeden Block anhand blockeigener Daten einem Mining-Pool zu (keine zusätzlichen Netzwerkaufrufe nötig). Reorg-sicher (siehe Abschnitt 8). |
 | Stale-Blocks-Pipeline | `stale-blocks-ingest` | Separate Sourcetype für nicht-aktive Chain-Tips (`getchaintips` + das GitHub-Datenset `bitcoin-data/stale-blocks`). Unabhängig von `rpc-ingest`s eigenem Reorg-Handling. |
-| API-Poller | `api-poll` | Fragt die mempool.space-Endpunkte in konfigurierbaren Intervallen ab, innerhalb eines gemeinsamen Rate-Limit-Budgets (Token-Bucket). Führt außerdem im Hintergrund die tägliche Preis-Lückenfüllung aus (siehe Abschnitt 10), die sich dasselbe Budget teilt. |
+| API-Poller | `api-poll` | Fragt die mempool.space-Endpunkte in konfigurierbaren Intervallen ab, innerhalb eines gemeinsamen Rate-Limit-Budgets (Token-Bucket) - inklusive eines minütlichen BTC/USD+EUR-Preis-Snapshots (siehe Abschnitt 10). |
 
 Jeder Prozess läuft bis `SIGTERM`/`SIGINT` (bzw. bis `api-poll` einen
 HTTP-429 erhält - dann wird bewusst **nicht** automatisch weiterversucht,
@@ -81,12 +81,11 @@ full_app/
     config.yaml                 Alle Einstellungen für lokale/Dev-Nutzung
     config.production.yaml      Gleiches Schema, zeigt auf die Pfade des Produktions-Pods
     pools-v2.json                Mitgeliefertes Mining-Pool-Signaturdatenset
-    kraken_xbtusd_daily.csv      (nicht mitgeliefert) hier den Kraken-OHLC-Export ablegen
+    XBTUSD_1.csv / XBTEUR_1.csv  (nicht mitgeliefert) hier die Kraken-1-Minuten-OHLC-Exporte ablegen
   btc_parser_app/
     config.py                    Lädt und validiert config.yaml in typisierte Dataclasses
     common/
       csv_writer.py               Gemeinsamer, größenrotierender Append-only-CSV-Writer
-      json_utils.py                Kompakte JSON-Kodierung (aktuell nur für coinbase_output_addresses_json)
       logging_setup.py             Konsolen- + rotierendes Datei-Logging
     api/                          mempool.space-Seite ("api-poll")
       rate_limiter.py              Token-Bucket-Ratenbegrenzer
@@ -94,9 +93,7 @@ full_app/
       mempool_endpoints.py         JSON-zu-Zeilen-Parser je Endpunkt
       poller.py                    Threaded Interval-Poller
       mining_pools_dataset.py      Aktualisiert config/pools-v2.json von GitHub
-      price_daily.py               Gemeinsames Zeilenschema/Lese-Hilfsfunktionen für price_daily.csv
-      kraken_import.py             Einmaliger Bulk-Import des Kraken-OHLC-CSV ("import-kraken-prices")
-      price_backfill.py            Lückenfüllung gegen mempool.spaces historical-price-Endpunkt
+      price_history_import.py      Einmaliger Bulk-Import zweier Kraken-Minuten-OHLC-CSVs in prices.csv ("import-price-history")
     rpc/                          bitcoin-cli-Seite ("rpc-ingest")
       client.py                    bitcoin-cli-Subprozess-Wrapper
       block_parser.py              Block-/Transaktions-JSON zu flachen CSV-Zeilen
@@ -174,7 +171,7 @@ BTC_PARSER_CONFIG=config/config.production.yaml ./start.sh
 ```
 
 Diese Konfiguration zeigt `rpc.output_dir` / `mempool_api.output_dir` /
-`pricing.output_dir` / `logging.log_dir` auf ein großes dediziertes
+`logging.log_dir` auf ein großes dediziertes
 Datenvolume statt relativer Pfade, da das Home-Verzeichnis des Pods (wohin
 dieses Repository geklont wird) für Chain-Daten viel zu klein ist. Die
 RPC-Verbindung geht direkt an den `bitcoin-core`-Pod und authentifiziert
@@ -190,9 +187,9 @@ und nicht etwas, das `config.yaml` allein steuert.
 
 Der mempool.space-HTTP-Poller. `rate_limit.requests_per_minute` /
 `rate_limit.bucket_size` definieren einen einzigen gemeinsamen Token-Bucket,
-aus dem sich jede `endpoints`-Anfrage **und** die Preis-Lückenfüllung
-(siehe Abschnitt 10) bedienen - eine Erhöhung dieser Werte erhöht also die
-effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Da
+aus dem sich jede `endpoints`-Anfrage bedient - eine Erhöhung dieser Werte
+erhöht also die effektive Rate gegenüber diesem Host insgesamt, nicht pro
+Endpunkt. Da
 mempool.space seine öffentlichen API-Limits nicht dokumentiert, ist der
 Standardwert (10 Anfragen/Minute, Burst von 10) bewusst konservativ
 gewählt.
@@ -226,53 +223,33 @@ den Import abzubrechen.
 
 ### `pricing`
 
-Tägliche BTC/USD-Preise, bewusst getrennt von `mempool_api`s
-minütlicher `prices.csv` (dem aktuellen, live gepollten Preis) -
-`pricing.output_dir` erhält eine eigene `price_daily.csv`, eine Zeile pro
-UTC-Kalendertag, gespeist von zwei unabhängigen Schreibern mit demselben
-Zeilenschema (`btc_parser_app/api/price_daily.py`):
+Preishistorie durchgehend minütlich, alles in einer Datei:
+`mempool_api.output_dir/prices.csv`. Der Live-Endpunkt `prices` (siehe
+`mempool_api.endpoints` oben) fragt mempool.space alle 60s ab und hängt
+eine Zeile `date_unix,usd,eur` an (`parse_prices` in
+`btc_parser_app/api/mempool_endpoints.py`) - `date_unix` ist der eigene
+Zeitstempel des Preises, nicht der Abrufzeitpunkt. `python run.py
+import-price-history` füllt alles vor diesem live gepollten Zeitfenster aus
+zwei Kraken-1-Minuten-OHLC/Candle-CSV-Exporten (Krakens historischer
+Datendownload, keine Kopfzeile:
+`unix_timestamp,open,high,low,close,volume,trades` - jeweils die
+"_1"-Intervall-Datei pro Währungspaar), nach Minuten-Zeitstempel
+zusammengeführt und im exakt gleichen `date_unix,usd,eur`-Schema
+geschrieben (`btc_parser_app/api/price_history_import.py`):
 
-- **`pricing.kraken`** - `python run.py import-kraken-prices` führt einen
-  einmaligen, aber idempotenten (beliebig wiederholbaren) Bulk-Import
-  eines Kraken-OHLC/Candle-CSV-Exports aus `pricing.kraken.csv_path`
-  durch (Krakens historischer Datendownload, keine Kopfzeile:
-  `unix_timestamp,open,high,low,close,volume,trades` - die
-  Tages-/"1440"-Intervall-Datei verwenden). Zeilen landen mit
-  `source=kraken` und gefüllten Spalten
-  `open_usd/high_usd/low_usd/close_usd/volume_btc/trades`. Bereits
-  importierte Tage werden anhand des Datums übersprungen - ein erneuter
-  Lauf gegen eine aktualisierte/erweiterte Exportdatei fügt also nur das
-  Neue hinzu. Tiefe Preishistorie ist ausschließlich Aufgabe dieser Datei,
-  nicht etwas, das die Anwendung selbst nachlädt.
-- **`pricing.backfill`** - läuft als zusätzlicher Hintergrund-Thread
-  innerhalb von `api-poll` und teilt sich den oben beschriebenen
-  Token-Bucket von `mempool_api`, statt ein eigenes Budget zu bekommen -
-  er feuert also nur in den Lücken zwischen den regulären Endpunkt-Polls.
-  Alle `request_interval_seconds` sucht er den ältesten fehlenden
-  UTC-Tag in `price_daily.csv` (beginnend bei `start_date`, falls der
-  Kraken-Import noch nie gelaufen ist) und holt genau diesen einen Tag
-  über mempool.spaces `historical-price`-Endpunkt nach. Zeilen landen mit
-  `source=mempool_backfill` und gefüllten Währungsspalten
-  (`usd/eur/gbp/cad/chf/aud/jpy`). Sobald bis "gestern" aufgeholt ist, geht
-  der Thread in den Leerlauf (keine Anfragen mehr), bis eine neue Lücke
-  entsteht - genau das passiert nach einem Absturz, einem Neustart oder
-  einer längeren Downtime. Damit ist dieser Mechanismus zugleich die
-  vollständige Antwort auf "keine Lücken in den Preisdaten nach einem
-  Ausfall lassen": Es gibt keine Sonderbehandlung beim Start, der Thread
-  sucht wie immer einfach die älteste Lücke.
+- **`pricing.xbtusd_csv_path`** - Pfad zum XBTUSD-"_1"-Export; dessen
+  Schlusskurs wird `usd` in jeder Zeile.
+- **`pricing.xbteur_csv_path`** - Pfad zum XBTEUR-"_1"-Export; dessen
+  Schlusskurs wird `eur` in jeder Zeile.
 
-`start_date` ist ein Boden-Wert, kein Ziel - er ist nur relevant, bis
-`import-kraken-prices` einmal gelaufen ist. Danach startet die
-Lückenfüllung immer beim Tag nach dem jüngsten bereits vorhandenen Datum.
-
-**Warum diese Aufteilung?** Tiefe historische Daten (mehrere Jahre) über
-mempool.spaces `historical-price`-Endpunkt zu holen würde - bei einem
-konservativen Rate-Limit von 10 Anfragen/Minute und einer Anfrage pro Tag -
-unnötig lange dauern und das gemeinsame Budget blockieren, das die
-regulären Endpunkte auch brauchen. Ein einmaliger CSV-Import über Kraken
-deckt die Tiefe ab; die budget-geteilte Lückenfüllung deckt nur den
-schmalen, aktuellen Zeitraum zwischen dem Ende der Kraken-Daten und "jetzt"
-ab - inklusive aller künftigen Downtime-Lücken.
+Beide Währungen werden anhand des Minuten-Zeitstempels zusammengeführt -
+existiert eine Minute nur in einer der beiden Dateien, entsteht trotzdem
+eine Zeile, mit der jeweils anderen Währung als `null` (genau wie beim
+Live-Endpunkt, der gelegentlich eine Währung auslässt). Bereits
+importierte Minuten werden anhand von `date_unix` übersprungen - daher
+ist `import-price-history` beliebig oft wiederholbar (vor oder nach dem
+Start von `api-poll`, in beliebiger Reihenfolge) und kollidiert nie mit
+dem, was der Live-Poller gerade schreibt.
 
 ### `rpc`
 
@@ -321,7 +298,7 @@ nicht-aktive Tips, `rpc-ingest` die aktive Chain).
 
 Jede Append-only-CSV dieser Anwendung (`blocks.csv`, `transactions.csv`,
 `index/index.csv`, `peer_attempts.csv`, die Stale-Blocks-Exporte,
-`price_daily.csv`, jede mempool.space-Endpunkt-CSV) wächst unbegrenzt,
+jede mempool.space-Endpunkt-CSV inklusive `prices.csv`) wächst unbegrenzt,
 daher deckelt `common/csv_writer.py` jeden Dateipart auf ~900 MB und rollt
 vor Überschreiten in einen neuen nummerierten Part: `blocks.csv` ist der
 erste Part, danach `blocks.000002.csv`, `blocks.000003.csv` usw., im
@@ -467,37 +444,44 @@ statt den Import abzubrechen.
   Witness-Byte-Zählungen usw.) landen in `transactions.csv`, um die
   Zeilengröße für nachgelagerte Systeme begrenzt zu halten (ursprünglich
   auf Splunks ~10k-Zeichen-Event-Limit zugeschnitten).
-- `coinbase_script_sig_hex` und `coinbase_output_addresses_json` sind die
-  zwei Ausnahmen, die als roh(ere) Felder auf der Coinbase-Transaktionszeile
-  bleiben - sie sind klein, durch Konsensregeln begrenzt, und genau das,
-  was die Mining-Pool-Zuordnung liest.
+- `transactions.csv` lässt jedes Feld weg, das reine Dopplung eines bereits
+  exportierten oder anderweitig aufgelösten Felds ist: `has_witness`,
+  `has_taproot_input`, `has_taproot_output`, `has_op_return` sowie
+  `prevout_values_complete`/`prevout_heights_complete` sind alle
+  einzeilig aus bereits vorhandenen Zähl-Feldern ableitbare Booleans (z. B.
+  `witness_input_count > 0`); die rohen `coinbase_script_sig_hex` und
+  `coinbase_output_addresses_json` entfallen, sobald sie die
+  Mining-Pool-Zuordnung gespeist haben - `pool_id`/`pool_name`/`pool_link`
+  auf der Block-Zeile tragen dieses Ergebnis bereits weiter.
+- `transactions.csv`s `wtxid` bleibt leer, wenn es gleich `txid` ist (jede
+  Nicht-Witness-Transaktion), statt den 64-Zeichen-Hash zu wiederholen -
+  nachgelagert mit `coalesce(wtxid, txid)` rekonstruieren. Nur
+  Witness-Transaktionen, bei denen sich beide tatsächlich unterscheiden,
+  kosten diese Spalte.
 - `mempool.csv` (Endpunkt `mempool`) enthält bewusst **nicht** das rohe
   `fee_histogram`, das mempool.space zurückgibt - ein JSON-Blob in einer
   einzelnen CSV-Zelle bringt in Splunk keinen Mehrwert. `tx_count`,
   `vsize_total` und `total_fee_sats` decken das relevante skalare Signal
   ab.
 
-## Pricing: Kraken-Import und Lückenfüllung
+## Pricing: minütliche Preishistorie
 
 Siehe Abschnitt "Konfiguration → `pricing`" oben für die Details. Kurz
 zusammengefasst der Workflow für einen neuen Node:
 
-1. Kraken-OHLC-Export (Tagesintervall/"1440") besorgen und unter
-   `pricing.kraken.csv_path` ablegen.
-2. Einmalig `python run.py import-kraken-prices` ausführen - füllt
-   `price_daily.csv` mit der kompletten historischen Zeitreihe.
-3. `api-poll` starten (oder laufen lassen) - der Lückenfüller holt
-   automatisch alles zwischen dem Ende der Kraken-Daten und "gestern" nach,
-   dann weiter jeden Tag nur den einen neuen fehlenden Tag, im
-   gemeinsamen Rate-Limit-Budget mit den übrigen mempool.space-Endpunkten.
-4. Nach jeder Downtime (Absturz, Wartungsfenster, Netzwerkausfall)
-   erkennt derselbe Mechanismus beim nächsten Lauf automatisch die
-   entstandene Lücke und füllt sie - ohne Sonderbehandlung.
+1. Zwei Kraken-1-Minuten-OHLC-Exporte (XBTUSD und XBTEUR) besorgen und
+   unter `pricing.xbtusd_csv_path`/`pricing.xbteur_csv_path` ablegen.
+2. Einmalig `python run.py import-price-history` ausführen - füllt
+   `prices.csv` mit der kompletten historischen Zeitreihe (Zeilenschema
+   `date_unix,usd,eur`, identisch zum Live-Poller).
+3. `api-poll` starten (oder laufen lassen) - der `prices`-Endpunkt hängt ab
+   sofort minütlich weitere Zeilen im selben Schema an dieselbe Datei an.
 
-Ohne einen vorherigen Kraken-Import beginnt die Lückenfüllung erst ab
-`pricing.backfill.start_date` (Standard `2026-01-01`) - für tiefere
-Historie ist immer der Kraken-Import der richtige Weg, nicht das Vorziehen
-dieses Datums (siehe Begründung im Konfigurationsabschnitt oben).
+Da beide Schritte dasselbe Zeilenschema in dieselbe Datei schreiben und
+`import-price-history` bereits vorhandene Minuten überspringt, spielt die
+Reihenfolge keine Rolle - der Import kann jederzeit erneut gegen eine
+aktualisierte/erweiterte Exportdatei laufen, ohne Duplikate zu erzeugen
+oder mit dem Live-Poller zu kollidieren.
 
 ## Storage-Strategie und Splunk-Anbindung
 
@@ -514,7 +498,7 @@ Bitcoin-Core-Datenverzeichnis teilt:
 | Verbleibend für Exporte/Puffer | Rest | begrenzt und **nicht** für dauerhafte Aufbewahrung der Exportdateien gedacht |
 
 Die exportierten CSV-Dateien (`blocks.csv`, `transactions.csv`,
-`price_daily.csv`, die mempool.space-Endpunkt-CSVs, die Stale-Blocks-
+die mempool.space-Endpunkt-CSVs (inklusive `prices.csv`), die Stale-Blocks-
 Exporte) sind also nicht als dauerhafter Datenspeicher auf diesem Host
 gedacht - Splunk (oder was auch immer sie konsumiert) muss sie zeitnah
 tatsächlich abholen.
@@ -603,10 +587,10 @@ braucht (ein 429, ein Reorg, ein RPC-Ausfall).
   eigentliche Ursache (zu aggressive Rate) verschlimmert.
 - **Kein automatisches Storage-Cleanup**, siehe Abschnitt 11 - bewusste
   Design-Entscheidung, keine offene Aufgabe.
-- **`import-kraken-prices` benötigt eine manuell besorgte Datei.** Es gibt
-  keinen automatisierten Download eines Kraken-Exports - das CSV muss von
-  Hand von Kraken heruntergeladen und unter `pricing.kraken.csv_path`
-  abgelegt werden.
+- **`import-price-history` benötigt manuell besorgte Dateien.** Es gibt
+  keinen automatisierten Download der Kraken-Exporte - beide CSVs müssen
+  von Hand von Kraken heruntergeladen und unter
+  `pricing.xbtusd_csv_path`/`pricing.xbteur_csv_path` abgelegt werden.
 - **`rpc.max_reorg_depth`** (Standard 100) ist eine Sicherheitsgrenze für
   die Rückwärtssuche nach dem gemeinsamen Vorfahren bei einem Reorg. Ein
   echter Reorg sollte dies nie annähernd erreichen; wird die Grenze doch
