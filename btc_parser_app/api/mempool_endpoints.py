@@ -69,17 +69,17 @@ def parse_mempool(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
 
 
 def parse_prices(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
+    # Only USD/EUR - the other currencies mempool.space returns (GBP, CAD,
+    # CHF, AUD, JPY) aren't used anywhere downstream. date_unix is the
+    # price's own timestamp (data["time"]), not polled_at, so this row shape
+    # matches exactly what btc_parser_app.api.price_history_import produces
+    # from historic minute-candle imports - both write into the same
+    # prices.csv, one row per minute either way.
     return [
         {
-            **polled_at.as_dict(),
-            "price_time_unix": data.get("time"),
+            "date_unix": data.get("time"),
             "usd": data.get("USD"),
             "eur": data.get("EUR"),
-            "gbp": data.get("GBP"),
-            "cad": data.get("CAD"),
-            "chf": data.get("CHF"),
-            "aud": data.get("AUD"),
-            "jpy": data.get("JPY"),
         }
     ]
 

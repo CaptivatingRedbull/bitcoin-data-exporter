@@ -18,10 +18,9 @@ import requests
 
 from btc_parser_app.api.client import ApiClient, FetchError, RateLimited, handle_rate_limited
 from btc_parser_app.api.mempool_endpoints import PARSER_REGISTRY, PolledAt
-from btc_parser_app.api.price_backfill import run_price_backfill_loop
 from btc_parser_app.api.rate_limiter import TokenBucket
 from btc_parser_app.common.csv_writer import write_rows_to_csv
-from btc_parser_app.config import EndpointConfig, MempoolApiConfig, PricingConfig
+from btc_parser_app.config import EndpointConfig, MempoolApiConfig
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +126,10 @@ def endpoint_loop(
 
 def run_poller(
     config: MempoolApiConfig,
-    pricing_config: PricingConfig | None = None,
     stop_event: threading.Event | None = None,
 ) -> int:
-    """Start one thread per endpoint (plus, if pricing_config is given, the
-    price_daily.csv gap-filler from price_backfill.py sharing the same
-    ApiClient/TokenBucket) and block until stop_event is set (by a 429, or
-    by the caller). Returns a process exit code: 0 for a clean
+    """Start one thread per endpoint and block until stop_event is set (by a
+    429, or by the caller). Returns a process exit code: 0 for a clean
     caller-requested stop, 1 if a 429 halted the poller.
 
     stop_event may be caller-owned (an externally constructed Event the
@@ -200,23 +196,6 @@ def run_poller(
         )
         for endpoint in config.endpoints
     ]
-
-    if pricing_config is not None:
-        pricing_config.output_dir.mkdir(parents=True, exist_ok=True)
-        threads.append(
-            threading.Thread(
-                target=run_price_backfill_loop,
-                args=(
-                    pricing_config,
-                    config.base_url,
-                    client,
-                    stop_event,
-                    rate_limited_event,
-                ),
-                name="price-backfill",
-                daemon=True,
-            )
-        )
 
     for t in threads:
         t.start()

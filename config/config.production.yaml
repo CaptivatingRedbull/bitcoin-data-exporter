@@ -82,20 +82,13 @@ mining_pools_dataset:
   refresh_interval_seconds: 604800
 
 # -----------------------------------------------------------------------
-# BTC/USD daily pricing - see config.yaml's comments for what each key
-# does. Only the paths differ, same as the other sections above.
+# BTC price history import - see config.yaml's comments for what each key
+# does. Same paths as the other sections above (local dev-relative; these
+# CSVs are placed by hand, not on the PVC).
 # -----------------------------------------------------------------------
 pricing:
-  output_dir: "/parser-data/out_prices"
-
-  kraken:
-    csv_path: "config/kraken_xbtusd_daily.csv"
-
-  backfill:
-    endpoint_path: "/api/v1/historical-price"
-    currency: "USD"
-    request_interval_seconds: 5
-    start_date: "2026-01-01"
+  xbtusd_csv_path: "config/XBTUSD_1.csv"
+  xbteur_csv_path: "config/XBTEUR_1.csv"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)
