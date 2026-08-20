@@ -32,12 +32,16 @@ Two passes per wake, sharing one StaleBlockRegistry:
    daily pull only costs work for genuinely new rows, not the whole
    multi-thousand-row history every time.
 
-Every event (a hash first sighted, a header becoming available) is
-exported to Splunk exactly once - StaleBlockRegistry.last_exported_status
-gates this, the same "have I already exported this" pattern
-reorg_state.IndexStore uses for the main chain. A later status upgrade is a
-new, additional event - nothing here ever mutates or re-emits a
-previously-exported row.
+Every event (a hash first sighted, a header becoming available) is exported
+to Splunk effectively once - StaleBlockRegistry.last_exported_status gates
+this, the same "have I already exported this" pattern reorg_state.IndexStore
+uses for the main chain. A later status upgrade is a new, additional event -
+nothing here ever mutates or re-emits a previously-exported row on purpose.
+The one exception is a crash between _export_header_event() (durable) and
+the registry commit that marks it exported (see _ingest_sighting): on
+restart, that one event may be re-exported as a duplicate row. This mirrors
+reorg_state.IndexStore's own tradeoff (see its docstring) of favoring a rare
+duplicate over ever silently losing an event.
 """
 
 from __future__ import annotations

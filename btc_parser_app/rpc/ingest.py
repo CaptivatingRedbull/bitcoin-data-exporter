@@ -118,7 +118,7 @@ def _process_height(
     (blockhash, block_time) so the caller can chain prev_time forward."""
     block_hash = get_block_hash(rpc_config, height)
 
-    if index.contains(block_hash):
+    if not index.needs_export(block_hash):
         logger.debug("Block %d (%s) already indexed - skipping export.", height, block_hash)
         header = get_block_header(rpc_config, block_hash)
         block_time = int(header["time"])
@@ -336,7 +336,11 @@ def _run_one_pass(
     # behind counts as caught up" threshold (latest_height itself is
     # tip - reorg_confirmations), so a backlog no bigger than that is at most
     # a block or two of ordinary tip-following jitter, not a real backlog.
-    atomic_mode = (latest_height - current_height) <= rpc_config.reorg_confirmations
+    # max(..., 1): steady-state tip-following always has a backlog of at
+    # least 1 (one new block since the last pass), so reorg_confirmations=0
+    # must not be read as "never caught up" - it should still mean "no
+    # confirmation margin", not "permanently stuck in batched mode".
+    atomic_mode = (latest_height - current_height) <= max(rpc_config.reorg_confirmations, 1)
 
     logger.info(
         "Parsing height %d through %d (%d blocks)%s...",

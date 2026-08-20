@@ -21,11 +21,15 @@ Path.exists() directly, or it will silently miss every part after the first.
 
 from __future__ import annotations
 
+import logging
 import re
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 # Soft cap per part. Rotation is only checked before a write, so a part can
 # briefly exceed this by up to one batch of rows - kept comfortably under
@@ -92,13 +96,40 @@ def csv_parts_exist(base_path: Path) -> bool:
     return any(p.stat().st_size > 0 for p in all_parts(base_path))
 
 
+def read_csv_lenient(path: Path, **read_csv_kwargs: Any) -> pl.DataFrame:
+    """pl.read_csv, but recovers from a truncated trailing line instead of
+    raising and crashing the whole process. write_rows_to_csv() appends with
+    no fsync/atomic-rename (unlike the whole-file state writes in
+    atomic_write.py), so a crash mid-append can leave a part's last line
+    truncated (e.g. a quoted field cut mid-value) - on the next startup,
+    that would otherwise make pl.read_csv raise ComputeError before the app
+    even gets to reprocess anything. On that failure, the last line is
+    dropped and the read retried once: the row it belonged to was never
+    fully durable in the first place, so nothing is lost that survived the
+    crash - and the caller's own reprocessing-on-restart logic (e.g.
+    IndexStore's contains()/needs_export() gate) picks it back up normally,
+    the same as any other row that wasn't flushed before a crash."""
+    try:
+        return pl.read_csv(path, **read_csv_kwargs)
+    except pl.exceptions.ComputeError:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) <= 1:
+            raise
+        logger.warning(
+            "%s: failed to parse - discarding its last line as a likely "
+            "crash-truncated row and retrying.",
+            path,
+        )
+        return pl.read_csv(StringIO("\n".join(lines[:-1]) + "\n"), **read_csv_kwargs)
+
+
 def read_csv_parts(base_path: Path, **read_csv_kwargs: Any) -> pl.DataFrame:
     """Concatenate every on-disk part of a logical CSV into one frame, in
     part order (oldest/lowest heights first). Returns an empty DataFrame if
     no part exists or every part is empty. kwargs are forwarded to
     pl.read_csv for each part (columns=, schema_overrides=, ...)."""
     frames = [
-        pl.read_csv(part, **read_csv_kwargs)
+        read_csv_lenient(part, **read_csv_kwargs)
         for part in all_parts(base_path)
         if part.stat().st_size > 0
     ]
