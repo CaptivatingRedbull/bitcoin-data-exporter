@@ -56,6 +56,32 @@ def _existing_part_numbers(base_path: Path) -> list[int]:
     return sorted(numbers)
 
 
+def part_path(base_path: Path, part: int) -> Path:
+    """Public wrapper for _part_path - the on-disk path for a given part
+    number of a logical CSV (see rpc/part_writer.py, which needs this to
+    address specific parts by number rather than by disk-scanning)."""
+    return _part_path(base_path, part)
+
+
+def existing_part_numbers(base_path: Path) -> list[int]:
+    """Public wrapper for _existing_part_numbers - every part number
+    currently on disk for base_path (see rpc/part_writer.py and
+    rpc/reorg_state.py, which need this to merge parts split across two
+    directories - a state root and an export root)."""
+    return _existing_part_numbers(base_path)
+
+
+def highest_existing_part(base_path: Path) -> int:
+    """The highest part number currently on disk for base_path, or 0 if none
+    exists. Used only to seed a durable part-number counter the first time
+    it's created (see rpc/part_writer.py) - safe to call once for that, but
+    not fit to call repeatedly as a source of truth, since a downstream
+    consumer (e.g. a Splunk batch input) may delete older parts, which would
+    make later scans under-report and hand out already-used numbers again."""
+    numbers = _existing_part_numbers(base_path)
+    return numbers[-1] if numbers else 0
+
+
 def all_parts(base_path: Path) -> list[Path]:
     """Every existing on-disk part of a logical CSV, oldest (part 1) first."""
     return [_part_path(base_path, n) for n in _existing_part_numbers(base_path)]

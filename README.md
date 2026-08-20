@@ -18,8 +18,8 @@ touches block parsing, and a node hiccup never touches pricing:
   sourcetype from `rpc-ingest`'s main-chain output, tracking non-active
   chain tips (see its own section below).
 - **API fetcher** (`api-poll`) - polls the mempool.space HTTP API on a
-  budget so it never trips a 429, and also runs the BTC/USD daily-price
-  gap-filler (see **Pricing** below) sharing that same budget.
+  budget so it never trips a 429, including a minutely BTC/USD+EUR price
+  snapshot (see **Pricing** below).
 
 Everything that's a tunable - endpoints, polling cadence, the rate-limit
 budget, RPC connection details, output paths - lives in
@@ -33,17 +33,18 @@ full_app/
   stop.sh                       stops what start.sh started
   run.py                       convenience CLI entrypoint
   requirements.txt
-  logs/                         rotating *.log per command (created on first run)
+  parser-data/                  all runtime data (created on first run) - logs/, state/{rpc,stale}
+                                 (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale}
+                                 (Splunk-facing - see config.yaml reference below)
   config/
     config.yaml                 all settings (see below)
     config.production.yaml      same schema, pointed at the production pod's paths (see "Production deployment" below)
     pools-v2.json                bundled mining-pool signature dataset
-    kraken_xbtusd_daily.csv      (not bundled) drop your Kraken OHLC export here - see Pricing below
+    XBTUSD_1.csv / XBTEUR_1.csv  (not bundled) drop your Kraken 1-minute OHLC exports here - see Pricing below
   btc_parser_app/
     config.py                    loads+validates config.yaml
     common/
       csv_writer.py               shared append-only, size-rotated CSV writer
-      json_utils.py                compact JSON helper (currently just coinbase_output_addresses_json)
       logging_setup.py             console + rotating-file logging
     api/                          mempool.space side ("api-poll")
       rate_limiter.py              token-bucket rate limiter
@@ -51,14 +52,13 @@ full_app/
       mempool_endpoints.py         per-endpoint JSON -> row parsers
       poller.py                    threaded interval poller
       mining_pools_dataset.py      refreshes config/pools-v2.json from GitHub
-      price_daily.py               shared price_daily.csv row schema/read helpers
-      kraken_import.py             one-time bulk import of a Kraken OHLC CSV ("import-kraken-prices")
-      price_backfill.py            gap-filler against mempool.space's historical-price endpoint
+      price_history_import.py      one-time bulk import of two Kraken minute OHLC CSVs into prices.csv ("import-price-history")
     rpc/                          bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
       client.py                    bitcoin-cli subprocess wrapper
       block_parser.py              block/tx JSON -> flat CSV rows
       mining_pools.py              mining pool extractor (tag + address matching)
       reorg_state.py               index/current.csv/latest.csv/block_status.csv/reorg/ state files
+      part_writer.py                state_dir->output_dir handoff + atomic per-block writes for blocks/transactions
       ingest.py                     genesis-to-tip catch-up + continuous reorg-aware tip-following
       stale_blocks.py               stale/orphaned chain-tip pipeline ("stale-blocks-ingest")
       stale_blocks_github.py        pulls the bitcoin-data/stale-blocks GitHub dataset
@@ -78,11 +78,11 @@ python3 -m venv .venv        # or reuse the repo's existing .venv
 configured `bitcoin.conf`/cookie file, or see `rpc.extra_args` below for a
 remote node).
 
-> **Note:** `rpc.output_dir` (default `out_trimmed`) resolves relative to
-> `full_app/`, i.e. `full_app/out_trimmed`. `rpc-ingest` builds its own
-> state from scratch the first time it's pointed at a directory - if
-> `out_trimmed` is empty, it starts fresh from genesis (height 0) rather
-> than assuming any pre-existing data in there is compatible with its
+> **Note:** `rpc.output_dir`/`rpc.state_dir` (defaults `parser-data/export/rpc`
+> and `parser-data/state/rpc`) resolve relative to `full_app/`. `rpc-ingest`
+> builds its own state from scratch the first time it's pointed at a pair of
+> directories - if they're empty, it starts fresh from genesis (height 0)
+> rather than assuming any pre-existing data in there is compatible with its
 > schema.
 
 ## Running it in production: `start.sh` / `stop.sh`
@@ -133,7 +133,7 @@ instead of the default `config.yaml`:
 BTC_PARSER_CONFIG=config/config.production.yaml ./start.sh
 ```
 
-That config points `rpc.output_dir`/`mempool_api.output_dir`/`pricing.output_dir`/
+That config points `rpc.output_dir`/`mempool_api.output_dir`/
 `logging.log_dir` at a large dedicated data volume instead of relative
 paths, since the pod's own home directory (where this repo is cloned) is
 far too small for chain data. It also connects straight to the
@@ -157,18 +157,17 @@ python run.py rpc-ingest
 python run.py stale-blocks-ingest
 
 # Long-running poller for the mempool.space endpoints (fees, mempool
-# state, prices, difficulty adjustment, 24h pool hashrate share), plus the
-# price_daily.csv gap-filler. Runs until Ctrl-C/SIGTERM or a 429.
+# state, prices, difficulty adjustment, 24h pool hashrate share). Runs
+# until Ctrl-C/SIGTERM or a 429.
 python run.py api-poll
 
 # Refresh config/pools-v2.json from GitHub (normally automatic - see below)
 python run.py update-pools-dataset
 
-# One-time (idempotent) bulk import of a Kraken OHLC CSV into
-# price_daily.csv - see Pricing below. Run this once before api-poll to
-# give the gap-filler a running start instead of walking back day-by-day
-# from pricing.backfill.start_date.
-python run.py import-kraken-prices
+# One-time (idempotent) bulk import of two Kraken 1-minute OHLC CSVs into
+# prices.csv - see Pricing below. Safe to run before or after api-poll has
+# started; already-imported minutes are skipped.
+python run.py import-price-history
 ```
 
 Every command accepts a `--config path/to/other-config.yaml` option to run
@@ -185,17 +184,23 @@ deliberately not fixed to accept both orders).
 
 The mempool.space HTTP poller. `rate_limit.requests_per_minute` /
 `rate_limit.bucket_size` define a single shared token bucket that every
-`endpoints` request - and the pricing gap-filler (see below) - draws from,
-so raising either value raises the effective rate for the whole poller
-against that host, not per-endpoint. mempool.space's public API limits are
-intentionally undisclosed, so the default (10 req/min, burst of 10) is
-deliberately conservative.
+`endpoints` request draws from, so raising either value raises the
+effective rate for the whole poller against that host, not per-endpoint.
+mempool.space's public API limits are intentionally undisclosed, so the
+default (10 req/min, burst of 10) is deliberately conservative.
 
 `endpoints` is a list of `{name, path, parser, interval_seconds}`. Each
 `parser` name must match a `parse_<name>` function registered in
 `btc_parser_app/api/mempool_endpoints.py` - add a new mempool.space endpoint
 by writing that function and adding an entry here; no other code changes
-needed. Each endpoint writes to its own `<name>.csv` under `output_dir`.
+needed. Each endpoint writes to its own `<name>.csv` directly under
+`output_dir` (default `parser-data/export/api`) - there's no separate state
+dir for this component, since nothing in this app ever reads these files
+back except `prices.csv` (see **Pricing** below). Point a Splunk `monitor`
+(tailing, non-destructive) input here, not `batch`: unlike `rpc.output_dir`,
+these are single ever-growing/rotating files, not one-complete-file-per-write,
+so there's no point where a `batch` input could safely consume-and-delete
+one without risking a partial read of the still-growing part.
 
 Requests are sent without a custom `User-Agent` header (just the
 `requests` library default) - there's no mempool.space subscription tier in
@@ -218,38 +223,40 @@ ingestion.
 
 ### `pricing`
 
-BTC/USD daily pricing, kept separate from `mempool_api`'s minute-level
-`prices.csv` (the *current* price, polled live) - `pricing.output_dir`
-gets its own `price_daily.csv`, one row per UTC calendar day, filled by two
-independent writers that share the same row schema
-(`btc_parser_app/api/price_daily.py`):
+BTC price history, minutely throughout, all in one file:
+`mempool_api.output_dir/prices.csv`. The live `prices` endpoint (see
+`mempool_api.endpoints` above) polls mempool.space every 60s and appends a
+`date_unix,usd,eur` row (`btc_parser_app/api/mempool_endpoints.py`'s
+`parse_prices`) - `date_unix` is the price's own timestamp, not when it was
+fetched. `python run.py import-price-history` fills in everything before
+that live-polled window from two Kraken 1-minute OHLC/candle CSV exports
+(their historical-data download, no header row:
+`unix_timestamp,open,high,low,close,volume,trades` - use the "_1"-interval
+file for each pair), joined on minute timestamp and written in the exact
+same `date_unix,usd,eur` shape
+(`btc_parser_app/api/price_history_import.py`):
 
-- **`pricing.kraken`** - `python run.py import-kraken-prices` does a
-  one-time (but idempotent/re-runnable) bulk import of a Kraken OHLC/candle
-  CSV export from `pricing.kraken.csv_path` (Kraken's historical-data
-  download, no header row: `unix_timestamp,open,high,low,close,volume,trades`
-  - use the daily/"1440"-interval file). Rows land with `source=kraken` and
-  the open/high/low/close/volume/trades columns populated. Already-imported
-  days are skipped by date, so re-running against a refreshed/extended
-  export only adds what's new - deep price history is entirely this
-  file's job, not something the app fetches itself.
-- **`pricing.backfill`** - runs inside `api-poll` as an extra background
-  loop, sharing `mempool_api`'s token bucket above rather than a separate
-  budget, so it only ever fires in the gaps between the regular endpoint
-  polls. Every `request_interval_seconds` it looks for the single oldest
-  missing UTC day in `price_daily.csv` (starting from `start_date` if the
-  Kraken import has never been run) and fetches just that one day from
-  mempool.space's `historical-price` endpoint. Rows land with
-  `source=mempool_backfill` and the per-currency columns populated instead.
-  Once caught up through yesterday it goes idle (zero requests) until a new
-  gap appears - which is exactly what happens after a crash/restart/outage,
-  so this same mechanism is the entire answer to "don't leave gaps in the
-  price data if the script goes down for a while": there's no special-casing
-  needed on startup, it just resumes finding the oldest gap same as always.
+- **`pricing.xbtusd_csv_path`** - path to the XBTUSD "_1" export; its
+  close price becomes each row's `usd`.
+- **`pricing.xbteur_csv_path`** - path to the XBTEUR "_1" export; its
+  close price becomes each row's `eur`.
 
-`start_date` is a floor, not a target - it only matters until you've run
-`import-kraken-prices` once. After that, the gap-filler always starts from
-the day after whatever's already on file.
+Both currencies get merged by minute timestamp (a minute present in only
+one file still gets a row, with the other currency left null - same as
+mempool.space's live endpoint occasionally omitting a currency).
+Already-imported minutes are skipped by `date_unix`, so it's safe to run
+`import-price-history` repeatedly (before or after `api-poll` has started,
+in any order) - re-running against a refreshed/extended export only adds
+what's new, and it never collides with what the live poller is writing.
+
+This dedupe reads `prices.csv`'s full history back, which is exactly why it
+lives under `mempool_api.output_dir` (Splunk-facing, `export/api/`) with a
+`monitor` input rather than a `batch` one, same as every other endpoint
+there: `monitor` never deletes, so the file this app depends on for
+correctness and the file Splunk indexes from stay the same file - no
+separate copy to keep in sync, no risk of `import-price-history` silently
+missing already-indexed-and-deleted minutes and re-importing them as
+duplicates.
 
 ### `rpc`
 
@@ -276,14 +283,23 @@ whether a full batch was reached, so tip-following (where a pass is often
 just the one new block) is never left waiting on 20 blocks to accumulate
 before it's durable - `batch_size` only paces how often the "Progress:
 height X/Y" log line and mid-pass checkpoint fire during a long backlog.
-`output_dir` (default `out_trimmed`) is where every RPC-side file lives:
-`blocks.csv`, `transactions.csv`, and all the reorg-tracking state files.
+`output_dir`/`state_dir` (defaults `parser-data/export/rpc` and
+`parser-data/state/rpc`) split the same way `stale_blocks` below does:
+`output_dir` holds only `blocks/` and `transactions/`, and only complete,
+Splunk-safe parts - nothing is ever written there directly while it's still
+being appended to (see **File rotation** below). `state_dir` holds
+everything internal - `current.csv`, `latest.csv`, `index/`,
+`block_status.csv`, `reorg/`, the `*_part_seq.csv` part counters, and, while
+there's backlog, the currently-still-growing `blocks/`/`transactions/` part
+itself. Point Splunk at `output_dir` only, with a `batch`
+(consume-and-delete) input - never at `state_dir`.
 
 ### `stale_blocks`
 
 Config for `stale-blocks-ingest`: `output_dir` (Splunk-facing exports,
-default `out_stale_blocks`) and `state_dir` (internal bookkeeping only,
-default `state/stale_blocks`) are kept separate on purpose. `node_poll_interval_seconds`
+default `parser-data/export/stale`) and `state_dir` (internal bookkeeping
+only, default `parser-data/state/stale`) are kept separate on purpose.
+`node_poll_interval_seconds`
 (default hourly) controls the `getchaintips` pass; `github.poll_interval_seconds`
 (default daily) controls the `bitcoin-data/stale-blocks` GitHub CSV pull -
 see **RPC Parser Reorg Handling** below for how this pipeline relates to
@@ -292,21 +308,47 @@ non-active tips, `rpc-ingest` tracks the active chain).
 
 ### File rotation
 
-Every append-only CSV this app writes (`blocks.csv`, `transactions.csv`,
-`index/index.csv`, `peer_attempts.csv`, the stale-blocks exports,
-`price_daily.csv`, each mempool.space endpoint's `<name>.csv`) grows
-forever, so `common/csv_writer.py` caps each on-disk part at ~900MB and
-rolls over into a new numbered part before exceeding it: `blocks.csv` is the
-first part, then `blocks.000002.csv`, `blocks.000003.csv`, and so on,
-alongside it in the same directory. Nothing else about the layout changes -
-it's still one logical CSV, just split into files that never cross ~1GB.
-Anything in this app that needs to read a logical CSV back in full (the
-index, `peer_attempts.csv`, bootstrapping from `blocks.csv`) reads every
+Every append-only CSV this app writes (`index/index.csv`,
+`peer_attempts.csv`, the stale-blocks exports, each mempool.space endpoint's
+`<name>.csv` including `prices.csv`, and `blocks.csv`/`transactions.csv`
+while there's backlog - see below) grows forever, so `common/csv_writer.py`
+caps each on-disk part at ~900MB and rolls over into a new numbered part
+before exceeding it: `<name>.csv` is the first part, then
+`<name>.000002.csv`, `<name>.000003.csv`, and so on, alongside it in the
+same directory. Nothing else about the layout changes - it's still one
+logical CSV, just split into files that never cross ~1GB. Anything in this
+app that needs to read a logical CSV back in full (the index,
+`peer_attempts.csv`, bootstrapping from `blocks/blocks.csv`) reads every
 part in order automatically. If you point an external tool (Splunk, a
 monitoring stanza, ad-hoc scripts) at these files directly, make sure it
 globs `<name>*.csv` rather than the exact first filename - see **Storage &
 Splunk ingestion** below for how this interacts with a constrained disk
 budget.
+
+`blocks/blocks*.csv` and `transactions/transactions*.csv` are a special
+case, via `rpc/part_writer.py`, on top of also being split across two
+directories (`rpc.state_dir`/`rpc.output_dir` - see above): while
+`rpc-ingest` has backlog beyond `rpc.reorg_confirmations`, rows accumulate
+into the current part *under `state_dir`*, rotating by size exactly like
+every other CSV above - and the instant a part is rotated away from (or
+superseded by the atomic mode below), it's moved whole into `output_dir`
+(a same-filesystem rename, atomic) and never written to again. So a part
+only ever appears under `output_dir` once it's completely done - nothing
+growing is ever visible there, in either mode. Once a pass's backlog is
+within `reorg_confirmations` (i.e. it's caught up to the tip, not just
+catching up towards it), every block instead gets written as its own
+already-complete part straight into `output_dir` - a new
+`blocks.NNNNNN.csv`/`transactions.NNNNNN.csv` per block, written via a temp
+file + atomic rename, never touching `state_dir` at all. Either way, a
+Splunk `batch` (sinkhole, consume-and-delete) input pointed at `output_dir`
+never needs switching to `monitor`, during backfill or steady-state
+tip-following alike (see **Storage & Splunk ingestion**) - there's nothing
+to exclude and nothing to switch, ever. The part numbering is shared and
+durable across both modes (persisted in
+`state_dir/blocks_part_seq.csv`/`state_dir/transactions_part_seq.csv`, not
+re-derived by scanning either directory), specifically so it survives
+Splunk deleting older parts from `output_dir` and never reuses or collides
+with a number, in either mode, across restarts.
 
 `reorg_confirmations` (default 6), `max_reorg_depth` (default 100), and
 `poll_interval_seconds` (default 30 - how long to sleep between tip checks
@@ -378,10 +420,19 @@ failing ingestion.
   counts, etc.) make it into `transactions.csv`, to keep row size bounded
   for downstream ingestion (originally sized for Splunk's ~10k char/event
   limit).
-- `coinbase_script_sig_hex` and `coinbase_output_addresses_json` are the
-  two exceptions kept as raw-ish fields on the coinbase transaction row -
-  they're small, bounded by consensus rules, and are exactly what the
-  mining pool extractor reads.
+- `transactions.csv` drops any field that's a pure duplicate of one already
+  exported, or of one already resolved elsewhere: `has_witness`,
+  `has_taproot_input`, `has_taproot_output`, `has_op_return`, and
+  `prevout_values_complete`/`prevout_heights_complete` are one-line derived
+  booleans from count fields you already have (e.g.
+  `witness_input_count > 0`); the raw `coinbase_script_sig_hex` and
+  `coinbase_output_addresses_json` are dropped once they've fed the mining
+  pool matcher, since `pool_id`/`pool_name`/`pool_link` on the block row
+  already carry that result forward.
+- `transactions.csv`'s `wtxid` is left null whenever it's equal to `txid`
+  (every non-witness transaction) instead of repeating the 64-char hash -
+  reconstruct the real value downstream with `coalesce(wtxid, txid)`. Only
+  witness transactions, where the two genuinely differ, pay for the column.
 - `mempool.csv` (the `mempool` API endpoint) intentionally does not include
   the raw `fee_histogram` mempool.space returns - a JSON blob stuffed into
   a single CSV cell isn't useful once it lands in Splunk. `tx_count`,
@@ -411,8 +462,8 @@ identity throughout. Every pass:
    tip-following) still gets a full, durable flush, it doesn't wait for
    `batch_size` blocks to accumulate (see the `rpc.batch_size` note above).
 
-State files (all under `rpc.output_dir`, alongside `blocks.csv` /
-`transactions.csv`):
+State files (all under `rpc.state_dir` - never `output_dir`, which holds
+only the completed `blocks/`/`transactions/` exports):
 
 - `index/index.csv` - immutable, append-only record of every block ever
   exported (`height,blockhash,previousblockhash`). Answers "has this exact
@@ -445,11 +496,14 @@ already parsed - there's no separate "backfill" mode to run first:
   height 0 and catches up to the tip.
 - **`current.csv` present**: resumes from exactly there - reorg-checked
   first, as above.
-- **`current.csv` missing but `blocks.csv` has data** (e.g. it was deleted,
-  or this `output_dir` was populated some other way and never got a
-  `current.csv`): reads `blocks.csv`'s own `height`/`hash`/`previousblockhash`
-  columns to rebuild `index/` and resumes from its highest block, instead
-  of losing that work and re-parsing from genesis.
+- **`current.csv` missing but `blocks.csv` data exists** (under `state_dir`
+  and/or `output_dir` - e.g. `current.csv` was deleted, or these
+  directories were populated some other way and never got one): reads
+  whatever `blocks.csv` parts are still on disk across both directories for
+  their `height`/`hash`/`previousblockhash` columns to rebuild `index/` and
+  resumes from the highest block found, instead of losing that work and
+  re-parsing from genesis. Best-effort - `output_dir` is Splunk-facing, so
+  older parts may already be gone by the time this runs.
 
 Either way, once it has a starting point it just runs the normal loop
 above. While there's a backlog (catching up from genesis, or from any gap),
@@ -475,42 +529,44 @@ The parser host has a fixed, limited disk budget shared with the Bitcoin
 Core datadir itself (which only grows), so exported CSVs are not meant to
 live on this host forever - Splunk (or whatever's consuming them) needs to
 actually pull them off in a timely way. This app deliberately stays
-hands-off about that: it rotates every logical CSV into ~900MB parts (see
-**File rotation** above) and otherwise never touches, moves, or deletes a
-file it has already written - which day rolled part gets deleted when is
-entirely a decision for however you've configured Splunk's inputs, since
-only Splunk (or you) actually knows what's been indexed.
+hands-off about that: it never touches, moves, or deletes a file once it's
+handed it to a Splunk-facing `export/` directory - which rotated part gets
+deleted when is entirely a decision for however you've configured Splunk's
+inputs, since only Splunk (or you) actually knows what's been indexed.
 
-The rotation scheme is deliberately built to support both of Splunk's file
-input modes, so you can switch between them without changing anything on
-this app's side:
+`parser-data/` (see **Layout** above) is split into two kinds of directory
+specifically so each `export/` subdirectory can be pointed at with a single,
+permanent Splunk input mode - no switching between backfill and
+steady-state, no excluding the newest file, no config discipline required:
 
-- **Bulk catch-up (genesis backfill, or any large gap)**: point a `batch`
-  (sinkhole) input at `rpc.output_dir` - it reads a completed file once and
-  deletes/moves it after indexing. That's safe here specifically because a
-  rotated part (`blocks.000004.csv`, etc.) is never appended to again once
-  the next part starts - it's a closed, complete file the moment it stops
-  being the newest one, so a destructive/move-after-read input can't lose
-  in-progress data. The ~900MB cap (comfortably under Splunk's forwarder
-  size limits) is exactly what keeps each part something a `batch` input
-  can consume as a whole unit.
-- **Steady-state tip-following**: once caught up, new data trickles in far
-  slower, so the same rotation produces far fewer, far-less-frequent parts.
-  At that point either keep using `batch` (still safe, same reasoning as
-  above - it's a low rate of small closed files) or switch the *current*
-  (still-growing) part to a `monitor` (tailing, non-destructive) input if
-  you'd rather not have Splunk delete anything on this host automatically;
-  monitor inputs never delete, so you'd clean up old rotated parts
-  yourself (by hand, or a cron job) once you've confirmed Splunk has
-  indexed them - there's nothing in this app that assumes one way or the
-  other.
+- **`export/rpc/{blocks,transactions}/` - `batch` (sinkhole,
+  consume-and-delete).** A part only ever appears here once it's completely
+  done - during backlog catch-up it's moved in whole from `state/rpc/` the
+  instant it's rotated away from (never while still being appended to); once
+  caught up to the tip, each block's part is written directly here, already
+  complete (see **File rotation** above). Either way, nothing growing is
+  ever visible under `export/rpc/` - a `batch` input can consume and delete
+  anything it finds there, at any time, with nothing excluded.
+- **`export/api/` and `export/stale/` - `monitor` (tailing,
+  non-destructive).** These aren't per-block atomic writes - each endpoint's
+  `<name>.csv` (including `prices.csv`) and the stale-tip exports are a
+  single file that's appended to and rotated by size like any other CSV in
+  this app (see **File rotation** above), so the *current* part is always
+  still growing. A `batch` input here would risk grabbing that file
+  mid-write. `monitor` never deletes, so clean up old rotated parts
+  yourself (by hand, or a cron job) once you've confirmed Splunk has indexed
+  them - and for `export/api/prices.csv` specifically, this isn't just the
+  safer default: `import-price-history` reads that file's full history back
+  to dedupe (see **Pricing** above), so it must never be deleted out from
+  under this app in the first place.
 
 None of this is wired up automatically on purpose: an app-side "delete
 this file, I'm sure Splunk has it" is one config mistake away from losing
 data with no way to re-derive it (re-parsing from genesis is expensive;
 re-fetching the API/pricing history may not even be possible). Configure
 retention explicitly in Splunk (or in your own cleanup cron, once you've
-verified indexing) rather than relying on this app to guess.
+verified indexing) rather than relying on this app to guess - and never
+point any Splunk input at a `state/` directory.
 
 ## Reused from earlier scripts
 

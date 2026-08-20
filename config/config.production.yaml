@@ -4,10 +4,14 @@
 # see that file's comments for what each key does - just pointed at this
 # pod's actual mounts instead of local-dev-relative paths:
 #
-#   - rpc.output_dir / mempool_api.output_dir / logging.log_dir all live on
-#     the 4TiB `bitcoin-parser-data` PVC, mounted at /parser-data. The
-#     bitcoin-storage-ssh-home PVC (where this repo is presumably cloned)
-#     is only 5Gi - nowhere near enough for chain data.
+#   - Every output/state/log path lives on the 4TiB `bitcoin-parser-data`
+#     PVC, mounted at /parser-data. The bitcoin-storage-ssh-home PVC (where
+#     this repo is presumably cloned) is only 5Gi - nowhere near enough for
+#     chain data. Layout: /parser-data/logs, /parser-data/state/{rpc,stale}
+#     (internal bookkeeping - never point Splunk here), and
+#     /parser-data/export/{api,rpc,stale} (Splunk-facing - see
+#     rpc.output_dir/state_dir and stale_blocks.output_dir/state_dir below
+#     for what goes where and why).
 #   - rpc.extra_args connects straight to the bitcoin-core pod's RPC
 #     (10.42.5.56:8332 - its in-cluster pod IP, confirmed reachable from
 #     bitcoin-storage-ssh as of 2026-08-13) and authenticates via the
@@ -37,7 +41,7 @@ logging:
 mempool_api:
   base_url: "https://mempool.space"
 
-  output_dir: "/parser-data/out_mempool_api"
+  output_dir: "/parser-data/export/api"
 
   request_timeout_seconds: 20
   max_connection_retries: 2
@@ -82,20 +86,13 @@ mining_pools_dataset:
   refresh_interval_seconds: 604800
 
 # -----------------------------------------------------------------------
-# BTC/USD daily pricing - see config.yaml's comments for what each key
-# does. Only the paths differ, same as the other sections above.
+# BTC price history import - see config.yaml's comments for what each key
+# does. Same paths as the other sections above (local dev-relative; these
+# CSVs are placed by hand, not on the PVC).
 # -----------------------------------------------------------------------
 pricing:
-  output_dir: "/parser-data/out_prices"
-
-  kraken:
-    csv_path: "config/kraken_xbtusd_daily.csv"
-
-  backfill:
-    endpoint_path: "/api/v1/historical-price"
-    currency: "USD"
-    request_interval_seconds: 5
-    start_date: "2026-01-01"
+  xbtusd_csv_path: "config/XBTUSD_1.csv"
+  xbteur_csv_path: "config/XBTEUR_1.csv"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)
@@ -111,7 +108,8 @@ rpc:
   rpcpassword_env: "BITCOIN_RPC_PASSWORD"
 
   batch_size: 20
-  output_dir: "/parser-data/out_trimmed"
+  output_dir: "/parser-data/export/rpc"
+  state_dir: "/parser-data/state/rpc"
 
   reorg_confirmations: 6
   max_reorg_depth: 100
@@ -131,8 +129,8 @@ rpc:
 # each key does. Only the paths differ, same as the other sections above.
 # -----------------------------------------------------------------------
 stale_blocks:
-  output_dir: "/parser-data/out_stale_blocks"
-  state_dir: "/parser-data/state/stale_blocks"
+  output_dir: "/parser-data/export/stale"
+  state_dir: "/parser-data/state/stale"
 
   node_poll_interval_seconds: 3600
   request_timeout_seconds: 30
