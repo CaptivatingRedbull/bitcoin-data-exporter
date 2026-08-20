@@ -29,12 +29,16 @@ full_app/
         block_status.csv
         blocks_part_seq.csv
         transactions_part_seq.csv
+        inputs_part_seq.csv
+        outputs_part_seq.csv
         index/
           index.csv (+ .000002.csv, ...)
         reorg/
           reorg_<timestamp>_<lowest>_<highest>.csv
         blocks/                  nur solange Backlog aufzuholen ist:
         transactions/             der aktuell noch wachsende Part
+        inputs/
+        outputs/
       stale/                     stale_blocks.state_dir (NICHT für Splunk)
         registry.csv
     export/
@@ -43,6 +47,10 @@ full_app/
           blocks.000001.csv, blocks.000002.csv, ...
         transactions/
           transactions.000001.csv, ...
+        inputs/
+          inputs.000001.csv, ...
+        outputs/
+          outputs.000001.csv, ...
       api/                       mempool_api.output_dir - für Splunk `monitor`
         fees_precise.csv
         mempool.csv
@@ -70,12 +78,14 @@ Redirects von `start.sh`) bleiben davon unberührt, da dieser Pfad in
 |---|---|---|---|---|
 | `blocks/blocks*.csv` | `rpc.output_dir` | Append-only/atomar, rotiert | Ja (`batch`) | Kapitel 4.6, 4.9 |
 | `transactions/transactions*.csv` | `rpc.output_dir` | Append-only/atomar, rotiert | Ja (`batch`) | Kapitel 4.6, 4.10 |
+| `inputs/inputs*.csv` | `rpc.output_dir` | Append-only/atomar, rotiert | Ja (`batch`) | Kapitel 4.6, 4.11 |
+| `outputs/outputs*.csv` | `rpc.output_dir` | Append-only/atomar, rotiert | Ja (`batch`) | Kapitel 4.6, 4.12 |
 | `index/index.csv` | `rpc.state_dir/index` | Append-only, rotiert | Nein (intern) | Kapitel 4.5 |
 | `current.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.5 |
 | `latest.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.5 |
 | `block_status.csv` | `rpc.state_dir` | veränderlich, überschrieben | Nein (intern) | Kapitel 4.5 |
 | `reorg/reorg_*.csv` | `rpc.state_dir/reorg` | 1 Datei pro Ereignis | Nein (intern, Audit) | Kapitel 4.5 |
-| `blocks_part_seq.csv` / `transactions_part_seq.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.6 |
+| `blocks_part_seq.csv` / `transactions_part_seq.csv` / `inputs_part_seq.csv` / `outputs_part_seq.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.6 |
 | `stale_block_headers.csv` | `stale_blocks.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 5.6 |
 | `registry.csv` | `stale_blocks.state_dir` | veränderlich, überschrieben | **Nein** | Kapitel 5.7 |
 | `fees_precise.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 6.4 |
@@ -114,8 +124,9 @@ das Bootstrapping aus `blocks/blocks.csv`, `prices.csv`s
 Existenz-/Datumsprüfungen), liest automatisch alle Parts in Reihenfolge
 (`csv_writer.py::read_csv_parts()`).
 
-**`blocks/blocks*.csv` und `transactions/transactions*.csv` sind ein
-Sonderfall** (siehe Kapitel 4.6): Sie rotieren nach demselben ~900-MB-
+**`blocks/blocks*.csv`, `transactions/transactions*.csv`,
+`inputs/inputs*.csv` und `outputs/outputs*.csv` sind ein Sonderfall**
+(siehe Kapitel 4.6): Sie rotieren nach demselben ~900-MB-
 Prinzip, sind aber zusätzlich über zwei Verzeichnisse verteilt
 (`state_dir` während Backlog, `output_dir` sobald ein Part abgeschlossen
 ist oder der Prozess eingeholt hat) und wechseln zwischen Batch- und
@@ -165,8 +176,8 @@ Splunk-Input-Modus verbinden lässt – kein Umschalten zwischen
 Genesis-Backfill und stationärem Betrieb, kein Ausschließen der jeweils
 neuesten Datei, keine zusätzliche Betriebsdisziplin nötig:
 
-- **`export/rpc/{blocks,transactions}/` → `batch` (Sinkhole,
-  konsumieren-und-löschen).** Ein Part erscheint hier immer erst, wenn er
+- **`export/rpc/{blocks,transactions,inputs,outputs}/` → `batch`
+  (Sinkhole, konsumieren-und-löschen).** Ein Part erscheint hier immer erst, wenn er
   vollständig abgeschlossen ist – während einer Backlog-Aufholjagd wird
   er komplett aus `state_dir` herübergeschoben, sobald er fertig ist
   (nie während er noch beschrieben wird); im eingeholten Zustand wird
@@ -200,8 +211,13 @@ der Prozess längst dem Tip folgt. **Niemals** einen Splunk-Input auf ein
 Alle Zeitstempel in dieser Anwendung sind, sofern nicht anders vermerkt,
 UTC:
 
-- `blocks.csv`/`transactions.csv`: `time`/`block_time` sind Unix-Epoch
-  (Sekunden), wie von Bitcoin Core geliefert.
+- `blocks.csv`: `time` ist Unix-Epoch (Sekunden), wie von Bitcoin Core
+  geliefert. `transactions.csv`/`inputs.csv`/`outputs.csv`: `block_time`
+  übernimmt denselben Wert vom zugehörigen Block (nicht separat pro
+  Transaktion/Input/Output geliefert) - genau das Feld, das in Splunk als
+  `_time` extrahiert werden sollte, damit sich auch die Detail-Event-Typen
+  per Zeitraum eingrenzen lassen, ohne über `txid`/`block_hash` gegen
+  `transactions.csv`/`blocks.csv` joinen zu müssen.
 - Jede mempool.space-Endpunkt-CSV außer `prices.csv`: `polled_at_unix`
   ist Unix-Epoch (UTC), vom Poller selbst zum Zeitpunkt der Antwort
   erzeugt.

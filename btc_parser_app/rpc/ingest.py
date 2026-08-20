@@ -131,14 +131,17 @@ def _process_height(
         # Decimal preserves exact BTC amounts until conversion to satoshis.
         block = json.loads(raw_json, parse_float=Decimal)
 
-        block_event, tx_events = aggregate_block(block, rpc_config, pool_matcher)
+        block_aggregate = aggregate_block(block, rpc_config, pool_matcher)
+        block_event = block_aggregate.block_event
         block_time = int(block_event["time"])
         block_event["time_since_prev_block_sec"] = (
             block_time - prev_time if prev_time is not None else None
         )
 
         batch_buffers["blocks"].append(block_event)
-        batch_buffers["transactions"].extend(tx_events)
+        batch_buffers["transactions"].extend(block_aggregate.tx_events)
+        batch_buffers["inputs"].extend(block_aggregate.input_events)
+        batch_buffers["outputs"].extend(block_aggregate.output_events)
         index.add(height, block_hash, str(block.get("previousblockhash") or ""))
 
     block_status.set_canonical_if_present(height, block_hash, True)
@@ -242,22 +245,20 @@ def _recover_from_reorg(
 
 def _drain(
     batch_buffers: dict[str, list[dict[str, Any]]],
-    blocks_seq: PartSequencer,
-    transactions_seq: PartSequencer,
+    sequencers: dict[str, PartSequencer],
     atomic: bool,
 ) -> None:
     """Write out whatever's buffered and clear the buffers. atomic=True
     writes each as a brand-new, complete part (see PartSequencer.write_atomic
     - used once caught up to the tip, one block at a time); atomic=False
     appends to the current rotating part (used while there's backlog)."""
-    if atomic:
-        blocks_seq.write_atomic(batch_buffers["blocks"])
-        transactions_seq.write_atomic(batch_buffers["transactions"])
-    else:
-        blocks_seq.write_batched(batch_buffers["blocks"])
-        transactions_seq.write_batched(batch_buffers["transactions"])
-    batch_buffers["blocks"].clear()
-    batch_buffers["transactions"].clear()
+    for key, seq in sequencers.items():
+        rows = batch_buffers[key]
+        if atomic:
+            seq.write_atomic(rows)
+        else:
+            seq.write_batched(rows)
+        rows.clear()
 
 
 def _run_one_pass(
@@ -268,14 +269,14 @@ def _run_one_pass(
     current_path: Path,
     latest_path: Path,
     reorg_dir: Path,
-    blocks_seq: PartSequencer,
-    transactions_seq: PartSequencer,
+    sequencers: dict[str, PartSequencer],
     stop: threading.Event,
 ) -> bool:
     """Run one tip-check-and-catch-up pass. Returns True if the loop should
     sleep before the next pass (nothing left to do / genuinely caught up to
     latest), False if it should go again immediately (there's backlog, or a
     stop was requested mid-pass and progress should be checkpointed)."""
+    blocks_seq = sequencers["blocks"]
     tip = get_block_count(rpc_config)
     latest_height = tip - rpc_config.reorg_confirmations
     if latest_height < 0:
@@ -344,7 +345,7 @@ def _run_one_pass(
         latest_height - current_height,
         " - caught up, writing one part per block" if atomic_mode else "",
     )
-    batch_buffers: dict[str, list[dict[str, Any]]] = {"blocks": [], "transactions": []}
+    batch_buffers: dict[str, list[dict[str, Any]]] = {key: [] for key in sequencers}
     start_time = time.perf_counter()
     processed = 0
     last_processed_height = current_height
@@ -362,13 +363,13 @@ def _run_one_pass(
         processed += 1
 
         if atomic_mode:
-            _drain(batch_buffers, blocks_seq, transactions_seq, atomic=True)
+            _drain(batch_buffers, sequencers, atomic=True)
             index.flush()
             block_status.flush()
             write_pointer(current_path, last_processed_height, last_hash)
             logger.info("Exported block %d (%s) as its own part.", height, last_hash)
         elif processed % rpc_config.batch_size == 0:
-            _drain(batch_buffers, blocks_seq, transactions_seq, atomic=False)
+            _drain(batch_buffers, sequencers, atomic=False)
             index.flush()
             # block_status is flushed before the pointer is advanced: its
             # entries are idempotent to redo (set_canonical_if_present() is a
@@ -388,7 +389,7 @@ def _run_one_pass(
                 bps,
             )
 
-    _drain(batch_buffers, blocks_seq, transactions_seq, atomic=atomic_mode)
+    _drain(batch_buffers, sequencers, atomic=atomic_mode)
     index.flush()
     block_status.flush()
     if last_hash is not None:
@@ -427,21 +428,19 @@ def run_rpc_ingest(config: AppConfig) -> None:
     current_path = state_dir / "current.csv"
     latest_path = state_dir / "latest.csv"
     reorg_dir = state_dir / "reorg"
-    # blocks/ and transactions/ are the only things ever written under
-    # out_dir - a part only appears there once it's complete (moved in from
-    # state_dir on rotation, or written there directly once caught up to the
-    # tip - see rpc/part_writer.py) - so a Splunk `batch` input pointed at
-    # out_dir alone, with nothing excluded, is always safe.
-    blocks_seq = PartSequencer(
-        state_dir / "blocks" / "blocks.csv",
-        out_dir / "blocks" / "blocks.csv",
-        state_dir / "blocks_part_seq.csv",
-    )
-    transactions_seq = PartSequencer(
-        state_dir / "transactions" / "transactions.csv",
-        out_dir / "transactions" / "transactions.csv",
-        state_dir / "transactions_part_seq.csv",
-    )
+    # blocks/, transactions/, inputs/ and outputs/ are the only things ever
+    # written under out_dir - a part only appears there once it's complete
+    # (moved in from state_dir on rotation, or written there directly once
+    # caught up to the tip - see rpc/part_writer.py) - so a Splunk `batch`
+    # input pointed at out_dir alone, with nothing excluded, is always safe.
+    sequencers = {
+        name: PartSequencer(
+            state_dir / name / f"{name}.csv",
+            out_dir / name / f"{name}.csv",
+            state_dir / f"{name}_part_seq.csv",
+        )
+        for name in ("blocks", "transactions", "inputs", "outputs")
+    }
 
     pool_matcher = load_pool_matcher(config.mining_pools_dataset.local_path)
     stop = _install_stop_signal()
@@ -467,8 +466,7 @@ def run_rpc_ingest(config: AppConfig) -> None:
                 current_path,
                 latest_path,
                 reorg_dir,
-                blocks_seq,
-                transactions_seq,
+                sequencers,
                 stop,
             )
         except RpcCliError as exc:
