@@ -1,9 +1,9 @@
 """Durable part-number sequencing and state->export handoff for
-blocks.csv/transactions.csv - the two logical CSVs that (a) switch between
-two write modes as rpc-ingest catches up to, then keeps following, the tip,
-and (b) live under two different roots so nothing not yet safe for Splunk to
-delete ever appears in the Splunk-facing directory (see rpc/ingest.py and
-config.py's RpcConfig.output_dir/state_dir):
+blocks.csv/transactions.csv/inputs.csv/outputs.csv - the logical CSVs that
+(a) switch between two write modes as rpc-ingest catches up to, then keeps
+following, the tip, and (b) live under two different roots so nothing not
+yet safe for Splunk to delete ever appears in the Splunk-facing directory
+(see rpc/ingest.py and config.py's RpcConfig.output_dir/state_dir):
 
 - Batched (there's backlog beyond rpc.reorg_confirmations): rows accumulate
   in memory and get appended to the current part *under state_dir* -
@@ -21,8 +21,9 @@ config.py's RpcConfig.output_dir/state_dir):
   written file.
 
 Both modes share one "next part number" counter per logical file, persisted
-to a tiny state file (blocks_part_seq.csv / transactions_part_seq.csv, under
-state_dir next to current.csv/latest.csv). This is required, not just
+to a tiny state file (blocks_part_seq.csv / transactions_part_seq.csv /
+inputs_part_seq.csv / outputs_part_seq.csv, under state_dir next to
+current.csv/latest.csv). This is required, not just
 convenient: atomic mode hands every part straight to Splunk, so nothing
 guarantees a given part is still on disk by the time this app needs to pick
 the next number - common/csv_writer.py's scan-the-directory approach only

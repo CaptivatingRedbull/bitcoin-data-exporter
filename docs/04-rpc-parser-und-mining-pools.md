@@ -10,10 +10,10 @@ Kommando: `rpc-ingest` · Einstiegspunkt: `btc_parser_app/rpc/ingest.py::run_rpc
 |---|---|
 | `rpc/ingest.py` | Hauptschleife: Katch-up + Tip-Following + Reorg-Erkennung/-Behebung. |
 | `rpc/client.py` | Dünner `bitcoin-cli`-Subprozess-Wrapper mit Retry/Timeout. |
-| `rpc/block_parser.py` | Wandelt ein `getblock verbosity=3`-JSON in flache Block-/Transaktions-Zeilen um. |
+| `rpc/block_parser.py` | Wandelt ein `getblock verbosity=3`-JSON in flache Block-/Transaktions-/Input-/Output-Zeilen um. |
 | `rpc/mining_pools.py` | Mining-Pool-Zuordnung (Tag- und Adressabgleich). |
 | `rpc/reorg_state.py` | Zustandsdateien: `index/`, `current.csv`, `latest.csv`, `block_status.csv`, `reorg/`. |
-| `rpc/part_writer.py` | Verwaltet die Part-Nummerierung sowie die Übergabe von `state_dir` nach `output_dir` für `blocks/`/`transactions/` – siehe 4.5. |
+| `rpc/part_writer.py` | Verwaltet die Part-Nummerierung sowie die Übergabe von `state_dir` nach `output_dir` für `blocks/`/`transactions/`/`inputs/`/`outputs/` – siehe 4.5. |
 | `api/mining_pools_dataset.py` | Lädt/aktualisiert das Signaturdatenset (`config/pools-v2.json`), das `mining_pools.py` verwendet. |
 
 ## 4.2 Es gibt genau eine Implementierung – kein separater Backfill-Modus
@@ -115,9 +115,9 @@ Export dafür – es ändert sich nur das `canonical`-Flag in
 verzeichnisse (siehe Kapitel 3):
 
 - **`output_dir`** (Standard `parser-data/export/rpc`) – Splunk-seitig.
-  Enthält ausschließlich die Unterordner `blocks/` und `transactions/`,
-  und darin **nur vollständige, abgeschlossene** Parts. Nichts anderes
-  wird hier jemals geschrieben.
+  Enthält ausschließlich die Unterordner `blocks/`, `transactions/`,
+  `inputs/` und `outputs/`, und darin **nur vollständige, abgeschlossene**
+  Parts. Nichts anderes wird hier jemals geschrieben.
 - **`state_dir`** (Standard `parser-data/state/rpc`) – rein intern, nie
   als Splunk-Input verwenden. Enthält:
 
@@ -128,8 +128,8 @@ verzeichnisse (siehe Kapitel 3):
 | `latest.csv` | veränderlich, 1 Zeile | `height, blockhash` | Zeiger auf `tip - reorg_confirmations`. Atomar geschrieben. |
 | `block_status.csv` | veränderlich | `height, blockhash, canonical` | Nur Blöcke, die jemals von einem Reorg abgehängt wurden, bekommen hier eine Zeile; alles nie Reorgte hat keine Zeile und gilt implizit als kanonisch. Atomar geschrieben. |
 | `reorg/reorg_<timestamp>_<lowest>_<highest>.csv` | unveränderlich, ein File pro Ereignis | `action, height, blockhash` | Audit-Trail (`action` ist `detached` oder `attached`). Nur zur Fehlersuche – wird von der Anwendung nie zurückgelesen, um den aktuellen Zustand zu bestimmen. |
-| `blocks_part_seq.csv` / `transactions_part_seq.csv` | veränderlich, 1 Zeile | `current_part, part_is_open` | Durable Part-Nummern-Zähler je logischer CSV (siehe unten). |
-| `blocks/`, `transactions/` (solange Backlog aufzuholen ist) | wachsender Part | – | Der aktuell noch offene, nicht abgeschlossene Part im Batch-Modus (siehe 4.3/4.6) – erst nach Rotation/Wechsel in den atomaren Modus wandert er vollständig nach `output_dir`. |
+| `blocks_part_seq.csv` / `transactions_part_seq.csv` / `inputs_part_seq.csv` / `outputs_part_seq.csv` | veränderlich, 1 Zeile | `current_part, part_is_open` | Durable Part-Nummern-Zähler je logischer CSV (siehe unten). |
+| `blocks/`, `transactions/`, `inputs/`, `outputs/` (solange Backlog aufzuholen ist) | wachsender Part | – | Der aktuell noch offene, nicht abgeschlossene Part im Batch-Modus (siehe 4.3/4.6) – erst nach Rotation/Wechsel in den atomaren Modus wandert er vollständig nach `output_dir`. |
 
 `index/index.csv` verwendet dieselbe Rotation wie jede andere
 Append-only-CSV (Kapitel 7); `IndexStore` liest beim Start automatisch
@@ -150,11 +150,15 @@ stattdessen eine harmlose erneute Prüfung beim nächsten Start.
 
 ## 4.6 Part-Verwaltung und atomarer Schreibmodus (`rpc/part_writer.py`)
 
-`blocks/blocks*.csv` und `transactions/transactions*.csv` sind ein
-Sonderfall gegenüber jeder anderen CSV dieser Anwendung, weil sie
-zusätzlich zur normalen Größenrotation (Kapitel 7) zwischen zwei
-Schreibmodi wechseln und über zwei Verzeichnisse verteilt sind. Das
-übernimmt `PartSequencer` in `rpc/part_writer.py`:
+`blocks/blocks*.csv`, `transactions/transactions*.csv`,
+`inputs/inputs*.csv` und `outputs/outputs*.csv` sind ein Sonderfall
+gegenüber jeder anderen CSV dieser Anwendung, weil sie zusätzlich zur
+normalen Größenrotation (Kapitel 7) zwischen zwei Schreibmodi wechseln und
+über zwei Verzeichnisse verteilt sind. Das übernimmt `PartSequencer` in
+`rpc/part_writer.py` – eine Instanz pro logischer CSV, alle vier
+gleichzeitig gedraint (siehe `ingest.py::_drain()`), damit ein Block seine
+vier zugehörigen Zeilensätze (Block, Transaktionen, Inputs, Outputs) immer
+im selben Schreibmodus und zum selben Zeitpunkt materialisiert:
 
 - **Batch-Modus** (`write_batched()`, solange Backlog über
   `rpc.reorg_confirmations` hinaus besteht): Zeilen sammeln sich im
@@ -181,7 +185,8 @@ oder der Prozess längst dem Tip folgt.
 
 Die Part-Nummerierung ist **ein gemeinsamer, dauerhaft persistierter
 Zähler** je logischer CSV (`blocks_part_seq.csv`/
-`transactions_part_seq.csv` unter `state_dir`), nicht durch Scannen des
+`transactions_part_seq.csv`/`inputs_part_seq.csv`/`outputs_part_seq.csv`
+unter `state_dir`), nicht durch Scannen des
 Verzeichnisses ermittelt. Das ist notwendig, nicht nur bequem: Im
 atomaren Modus landet jeder Part sofort bei Splunk, sodass zum Zeitpunkt,
 an dem die Anwendung die nächste Nummer vergeben muss, nicht garantiert
@@ -325,12 +330,14 @@ erhalten – es ist dem Block inhärent.
 
 Eine Zeile pro Transaktion (inkl. Coinbase). Erzeugt von
 `block_parser.py::aggregate_transaction()`. Liegt unter
-`output_dir/transactions/` (siehe 4.5/4.6). Einzelne vin/vout-Zeilen
-werden **nie** exportiert – nur aggregierte/skalare Felder, um die
-Zeilengröße für nachgelagerte Systeme begrenzt zu halten (ursprünglich
-auf Splunks ~10k-Zeichen-Event-Limit zugeschnitten). Zusätzlich werden
-reine Duplikate anderer, bereits exportierter Felder **nicht**
-geschrieben (siehe die Hinweise unter der Tabelle).
+`output_dir/transactions/` (siehe 4.5/4.6). Nur aggregierte/skalare
+Felder – die einzelnen vin/vout-Zeilen dieser Transaktion liegen separat
+in `inputs.csv`/`outputs.csv` (siehe 4.11/4.12), damit Dashboards, die nur
+die Block-/Transaktionsebene brauchen, ihre Kennzahlen (Gebühren-Stats,
+Skript-Typ-Verteilung, ...) nie zur Suchzeit aus tausenden Detail-Zeilen
+pro Block neu berechnen müssen. Zusätzlich werden reine Duplikate anderer,
+bereits exportierter Felder **nicht** geschrieben (siehe die Hinweise
+unter der Tabelle).
 
 | Feld | Beschreibung |
 |---|---|
@@ -372,7 +379,74 @@ geschrieben (siehe die Hinweise unter der Tabelle).
   stehen, tragen die rohen Felder keinen zusätzlichen nachgelagerten Wert
   mehr.
 
-## 4.11 Beendigung
+## 4.11 Ausgabeschema: `inputs.csv`
+
+Eine Zeile pro vin (inkl. der synthetischen Coinbase-Eingabe). Erzeugt von
+`block_parser.py::aggregate_transaction()`. Liegt unter
+`output_dir/inputs/` (siehe 4.5/4.6).
+
+| Feld | Beschreibung |
+|---|---|
+| `block_hash`, `block_height`, `block_time`, `tx_index`, `txid` | Beziehung zu Block/Transaktion – `block_time` ist das für Splunks `_time` gedachte Feld, damit sich auch diese Detail-Zeilen ohne Join gegen `transactions.csv`/`blocks.csv` per Zeitraum eingrenzen lassen. |
+| `is_coinbase` | Von der Elterntransaktion übernommen, damit sich Coinbase-Eingaben ohne Join filtern lassen. |
+| `input_index` | Position dieses vin innerhalb der Transaktion. |
+| `prevout_txid`, `prevout_vout` | Welcher Output ausgegeben wird – `null` bei der Coinbase-Eingabe (die nichts ausgibt). |
+| `value_sats` | Wert des ausgegebenen Prevout, sofern von `getblock verbosity=3` bekannt – `null` bei der Coinbase-Eingabe oder falls unbekannt. |
+| `prevout_height` | Blockhöhe, in der der ausgegebene Output entstand. |
+| `input_age_blocks` | `block_height - prevout_height`, vorab berechnet, damit das nicht bei jeder Suche neu ermittelt werden muss. |
+| `prevout_generated` | War der ausgegebene Output selbst eine Coinbase-Ausgabe (`prevout.generated`). |
+| `prevout_type` | Skript-Typ des ausgegebenen Outputs, normalisiert (dieselben 12 Werte wie `vin_type_<typ>_count` in `transactions.csv`). |
+| `prevout_address` | Adresse des ausgegebenen Outputs, sofern ableitbar (siehe die Hinweise zu `address` unter 4.12). |
+| `scriptsig_bytes` | Byte-Länge des `scriptSig` – der rohe Hex-String selbst wird **nicht** exportiert (siehe Hinweis unten). |
+| `coinbase_hex` | Rohe Coinbase-Daten (`vin[0].coinbase`) – nur bei der Coinbase-Eingabe gesetzt, sonst `null`. Anders als `scriptsig_bytes`/`scriptSig` wird dieses Feld als Hex-String exportiert: Es ist klein (typischerweise < 100 Byte: BIP-34-Höhe, Extranonce, Pool-Tag) und trägt direkt nutzbare Information (z. B. dasselbe Pool-Tag, das `mining_pools.py` zur Zuordnung liest, siehe 4.8). |
+| `witness_item_count`, `witness_data_bytes` | Witness-Nutzung dieser Eingabe. |
+| `sequence` | Rohe `nSequence` (uint32). Zusätzlich zu den beiden folgenden dekodierten Feldern exportiert, da unkritisch groß und potenziell für Auswertungen nützlich, die die vorgefertigte Dekodierung nicht abdeckt. |
+| `signals_rbf` | Pro-Eingabe-Variante von `transactions.csv`s `signals_rbf` (BIP-125: `sequence < 0xFFFFFFFE`, `false` bei der Coinbase-Eingabe). |
+| `relative_locktime_type`, `relative_locktime_value` | BIP-68-relatives Locktime, aus `sequence` dekodiert (`decode_sequence()`) statt als rohes Bitfeld exportiert, da Splunk sonst für jede Auswertung Bitmasken-Arithmetik auf einem gepackten uint32 bräuchte. `relative_locktime_type` ist `"blocks"` oder `"time"` (Einheiten von 512 Sekunden), `relative_locktime_value` die untersten 16 Bit – beide `null`, wenn `tx.version < 2`, das Disable-Flag (Bit 31) gesetzt ist, oder es sich um die Coinbase-Eingabe handelt. |
+
+**Bewusst nicht exportiert: `scriptsig_hex`.** Der volle `scriptSig`-Hex
+ist für die überwiegende Mehrheit der Eingaben seit der SegWit-Aktivierung
+ohnehin leer (die eigentlichen Entsperrdaten liegen dann in
+`txinwitness`) und bietet ohne eigene Dekodierlogik keinen
+Splunk-nativen Analysenutzen – SPL kann auf rohem Hex weder sinnvoll
+`stats` noch charten. Der einzige echte Grund, ihn dennoch zu behalten,
+wäre archivarisch (für vor-SegWit-Blöcke ist `scriptSig` die einzige
+je existierende Aufzeichnung der Entsperrdaten). Da der Node hier
+archival bleibt und ein erneuter Parse-Lauf ab Genesis damit jederzeit
+möglich ist, überwiegt dieser Grund nicht die Kosten, ihn auf jeder
+Zeile mitzuführen.
+
+## 4.12 Ausgabeschema: `outputs.csv`
+
+Eine Zeile pro vout. Erzeugt von `block_parser.py::aggregate_transaction()`.
+Liegt unter `output_dir/outputs/` (siehe 4.5/4.6).
+
+| Feld | Beschreibung |
+|---|---|
+| `block_hash`, `block_height`, `block_time`, `tx_index`, `txid` | Beziehung zu Block/Transaktion – siehe 4.11. |
+| `is_coinbase` | Von der Elterntransaktion übernommen. |
+| `output_index` | Position dieses vout innerhalb der Transaktion (`vout.n`). |
+| `value_sats` | Ausgabewert in Satoshi. |
+| `script_type` | Normalisierter Skript-Typ (dieselben 12 Werte wie `vout_type_<typ>_count` in `transactions.csv`). |
+| `script_bytes` | Byte-Länge des `scriptPubKey` – der rohe Hex-String selbst wird **nicht** exportiert (siehe Hinweis unten). |
+| `address` | Von Bitcoin Core direkt geliefert (`scriptPubKey.address`), keine eigene Ableitungslogik nötig. `null` bei: `nulldata` (OP_RETURN, kein Adresskonzept), `multisig` ohne P2SH/P2WSH-Hülle (mehrere Pubkeys, keine einzelne Adresse – seit Bitcoin Core v22 liefert die RPC hierfür kein Feld mehr statt des früheren `addresses[]`-Arrays; historisch nur bis ~2012 verbreitet, seither durch P2SH/P2WSH-Multisig abgelöst), `nonstandard`, `witness_unknown` und `anchor`. Für alle Standard-Typen (`pubkeyhash`, `scripthash`, `pubkey`, `witness_v0_keyhash`, `witness_v0_scripthash`, `witness_v1_taproot`) ist das Feld praktisch immer gesetzt. |
+| `is_op_return` | `script_type == "nulldata"`, als eigenes Bool-Feld statt einer String-Vergleichs-Suche bei jeder Auswertung. |
+
+**Bewusst nicht exportiert: `script_hex` (der volle `scriptPubKey`-Hex).**
+Für alle Standard-Adresstypen ist er reine Redundanz zu `address` +
+`script_type` – ohne eigenen analytischen Mehrwert. Der eine Fall, in dem
+der rohe Hex tatsächlich Inhalt trägt, ist `nulldata` (OP_RETURN): Dort
+steckt die eigentliche Payload im Skript, und das Taggen bekannter
+Protokoll-Präfixe wäre ein echter Splunk-Anwendungsfall. Er wurde trotzdem
+komplett weggelassen, weil derselbe Spaltentyp dann pro Zeile beliebig
+groß werden kann – die größte bisher beobachtete OP_RETURN-Payload im
+Mainnet lag bei 79.870 Byte – und ein einzelnes überlanges Feld ein
+komplettes Splunk-Event an dessen Truncate-Grenze (Standard ~10.000
+Byte) kappen und damit auch die übrigen Felder derselben Zeile
+beschädigen kann. Eine Beschränkung nur auf `nulldata`-Zeilen würde dieses
+Risiko lediglich verkleinern, nicht beseitigen.
+
+## 4.13 Beendigung
 
 Ein installierter Signal-Handler (`_install_stop_signal()`) setzt bei
 `SIGTERM`/`SIGINT` nur ein `threading.Event`, das zwischen Blöcken und

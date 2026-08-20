@@ -1,7 +1,7 @@
-"""Turns a `getblock <hash> 3` payload into flat block/transaction event
-dicts ready for CSV export.
+"""Turns a `getblock <hash> 3` payload into flat block/transaction/input/
+output event dicts ready for CSV export.
 
-Ported from rpc_parser_modified.py, with two additions for the mining pool
+Ported from rpc_parser_modified.py, with additions for the mining pool
 extractor (btc_parser_app.rpc.mining_pools):
 
 - aggregate_transaction also returns the coinbase transaction's scriptSig
@@ -10,13 +10,20 @@ extractor (btc_parser_app.rpc.mining_pools):
 - aggregate_block takes an optional PoolMatcher and, when given one,
   attaches pool_id/pool_name/pool_link/pool_match_method to the block event.
 
-vin/vout are still fully inspected here, but their individual rows are not
-exported - only scalar aggregate fields make it into the CSV. The raw
-coinbase scriptSig/output-addresses used for pool matching are deliberately
-NOT among them: once pool_id/pool_name land on the block row, the raw
-fields have no remaining downstream use, so aggregate_transaction returns
-them separately from the exported event dict instead of writing them to
-transactions.csv.
+Four event types come out of a block: one block event, one transaction
+event per tx, one input event per vin, and one output event per vout - the
+block/transaction rows keep their scalar aggregates (fee stats, script-type
+histograms, ...) alongside the per-vin/vout detail rows, so Splunk dashboards
+built against the aggregates never need to recompute them from the detail
+rows at search time. The raw coinbase scriptSig/output-addresses used for
+pool matching are deliberately not among any of these: once pool_id/
+pool_name land on the block row, the raw fields have no remaining downstream
+use, so aggregate_transaction returns them separately from the exported
+event dicts instead of writing them to a CSV. Input/output rows also omit
+scriptSig/scriptPubKey hex entirely - scriptSig is redundant with an
+archival node (re-derivable from a re-parse) and scriptPubKey can carry an
+arbitrarily large OP_RETURN payload (tens of KB, observed on mainnet), which
+would risk Splunk's per-event truncation limit.
 """
 
 from __future__ import annotations
@@ -24,13 +31,19 @@ from __future__ import annotations
 import math
 import statistics
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 from btc_parser_app.config import RpcConfig
 from btc_parser_app.rpc.mining_pools import UNKNOWN_MATCH, PoolMatch, PoolMatcher
 
 SATOSHIS_PER_BTC = Decimal(100000000)
 BIP125_RBF_SEQUENCE_THRESHOLD = 0xFFFFFFFE
+
+# BIP68 relative-locktime bit layout within nSequence (only meaningful when
+# the spending tx has version >= 2 - see decode_sequence).
+BIP68_DISABLE_FLAG = 1 << 31
+BIP68_TYPE_FLAG = 1 << 22
+BIP68_VALUE_MASK = 0x0000FFFF
 
 # Bitcoin Core scriptPubKey types worth keeping as fixed aggregate counters.
 # Anything else is counted as "other", so a newly introduced script type
@@ -87,6 +100,36 @@ def median_or_none(values: list[float | int]) -> float | None:
     return float(statistics.median(values)) if values else None
 
 
+def decode_sequence(
+    sequence: Any, tx_version: Any, is_coinbase: bool
+) -> tuple[bool, str | None, int | None]:
+    """Decode an input's raw nSequence into (signals_rbf, relative_locktime_type,
+    relative_locktime_value) so Splunk never has to do bitwise arithmetic on
+    a packed uint32 at search time.
+
+    signals_rbf: BIP125 - any non-coinbase input with sequence < 0xFFFFFFFE
+    opts the whole transaction into replace-by-fee.
+
+    relative_locktime_type/value: BIP68 - only defined when tx version >= 2
+    and the input's disable flag (bit 31) is clear. type is "blocks" or
+    "time" (units of 512 seconds) per the type flag (bit 22); value is the
+    low 16 bits, left as raw block/time units rather than converted to
+    seconds so it stays directly comparable to block heights.
+    """
+    if sequence is None:
+        return False, None, None
+    seq = int(sequence)
+
+    signals_rbf = not is_coinbase and seq < BIP125_RBF_SEQUENCE_THRESHOLD
+
+    if is_coinbase or int(tx_version or 0) < 2 or seq & BIP68_DISABLE_FLAG:
+        return signals_rbf, None, None
+
+    locktime_type = "time" if seq & BIP68_TYPE_FLAG else "blocks"
+    locktime_value = seq & BIP68_VALUE_MASK
+    return signals_rbf, locktime_type, locktime_value
+
+
 def block_subsidy_sats(height: int, config: RpcConfig) -> int:
     """Deterministic block subsidy in satoshis (mirrors Bitcoin Core's
     GetBlockSubsidy). Computed from height alone, so it stays correct even
@@ -103,6 +146,14 @@ def block_subsidy_sats(height: int, config: RpcConfig) -> int:
 # ==============================================================================
 
 
+class TransactionAggregate(NamedTuple):
+    event: dict[str, Any]
+    coinbase_script_sig_hex: str | None
+    coinbase_output_addresses: list[str]
+    input_events: list[dict[str, Any]]
+    output_events: list[dict[str, Any]]
+
+
 def aggregate_transaction(
     tx: dict[str, Any],
     *,
@@ -111,15 +162,18 @@ def aggregate_transaction(
     block_time: int,
     tx_index: int,
     config: RpcConfig,
-) -> tuple[dict[str, Any], str | None, list[str]]:
-    """Returns (event, coinbase_script_sig_hex, coinbase_output_addresses).
-    The latter two are only non-empty for the coinbase transaction and exist
-    purely to feed the mining pool matcher in aggregate_block - they are not
-    part of the exported event dict (see module docstring)."""
+) -> TransactionAggregate:
+    """coinbase_script_sig_hex/coinbase_output_addresses are only non-empty
+    for the coinbase transaction and exist purely to feed the mining pool
+    matcher in aggregate_block - they are not part of the exported event
+    dict (see module docstring). input_events/output_events are one row per
+    vin/vout, for the inputs.csv/outputs.csv detail event types."""
     vins = tx.get("vin") or []
     vouts = tx.get("vout") or []
 
     is_coinbase = bool(vins and vins[0].get("coinbase") is not None)
+    txid = tx.get("txid")
+    tx_version = tx.get("version")
 
     vin_type_counts = init_script_type_counts("vin_type")
     vout_type_counts = init_script_type_counts("vout_type")
@@ -137,48 +191,87 @@ def aggregate_transaction(
     witness_data_bytes = 0
     scriptsig_bytes = 0
     signals_rbf = False
+    input_events: list[dict[str, Any]] = []
 
-    for vin in vins:
+    for input_index, vin in enumerate(vins):
         witness = vin.get("txinwitness") or []
+        vin_witness_item_count = len(witness)
+        vin_witness_data_bytes = sum(hex_data_bytes(item) for item in witness)
         if witness:
             witness_input_count += 1
-            witness_item_count += len(witness)
-            witness_data_bytes += sum(hex_data_bytes(item) for item in witness)
+            witness_item_count += vin_witness_item_count
+            witness_data_bytes += vin_witness_data_bytes
 
         script_sig = vin.get("scriptSig") or {}
-        scriptsig_bytes += hex_data_bytes(script_sig.get("hex"))
+        vin_scriptsig_bytes = hex_data_bytes(script_sig.get("hex"))
+        scriptsig_bytes += vin_scriptsig_bytes
 
         sequence = vin.get("sequence")
-        if (
-            not is_coinbase
-            and sequence is not None
-            and int(sequence) < BIP125_RBF_SEQUENCE_THRESHOLD
-        ):
+        vin_signals_rbf, relative_locktime_type, relative_locktime_value = (
+            decode_sequence(sequence, tx_version, is_coinbase)
+        )
+        if vin_signals_rbf:
             signals_rbf = True
 
         prevout = vin.get("prevout")
-        if not isinstance(prevout, dict):
-            continue
+        prevout_value_sats: int | None = None
+        prevout_height = None
+        prevout_generated = None
+        prevout_type = None
+        prevout_address = None
+        input_age_blocks = None
 
-        if prevout.get("generated") is True:
-            generated_input_count += 1
+        if isinstance(prevout, dict):
+            if prevout.get("generated") is True:
+                generated_input_count += 1
+            prevout_generated = prevout.get("generated")
 
-        prevout_value_sats = btc_to_sats(prevout.get("value"))
-        if prevout_value_sats is not None:
-            prevout_value_known_count += 1
-            input_values_sats.append(prevout_value_sats)
-
-        prevout_height = prevout.get("height")
-        if prevout_height is not None:
-            prevout_height_known_count += 1
-            age = max(0, block_height - int(prevout_height))
-            input_ages_blocks.append(age)
+            prevout_value_sats = btc_to_sats(prevout.get("value"))
             if prevout_value_sats is not None:
-                input_age_value_pairs.append((age, prevout_value_sats))
+                prevout_value_known_count += 1
+                input_values_sats.append(prevout_value_sats)
 
-        prevout_script = prevout.get("scriptPubKey") or {}
-        script_type = normalized_script_type(prevout_script.get("type"))
-        vin_type_counts[f"vin_type_{script_type}_count"] += 1
+            prevout_height = prevout.get("height")
+            if prevout_height is not None:
+                prevout_height_known_count += 1
+                age = max(0, block_height - int(prevout_height))
+                input_age_blocks = age
+                input_ages_blocks.append(age)
+                if prevout_value_sats is not None:
+                    input_age_value_pairs.append((age, prevout_value_sats))
+
+            prevout_script = prevout.get("scriptPubKey") or {}
+            prevout_type = normalized_script_type(prevout_script.get("type"))
+            prevout_address = prevout_script.get("address")
+            vin_type_counts[f"vin_type_{prevout_type}_count"] += 1
+
+        input_events.append(
+            {
+                "block_hash": block_hash,
+                "block_height": block_height,
+                "block_time": block_time,
+                "tx_index": tx_index,
+                "txid": txid,
+                "is_coinbase": is_coinbase,
+                "input_index": input_index,
+                "prevout_txid": vin.get("txid"),
+                "prevout_vout": vin.get("vout"),
+                "value_sats": prevout_value_sats,
+                "prevout_height": prevout_height,
+                "input_age_blocks": input_age_blocks,
+                "prevout_generated": prevout_generated,
+                "prevout_type": prevout_type,
+                "prevout_address": prevout_address,
+                "scriptsig_bytes": vin_scriptsig_bytes,
+                "coinbase_hex": vin.get("coinbase"),
+                "witness_item_count": vin_witness_item_count,
+                "witness_data_bytes": vin_witness_data_bytes,
+                "sequence": sequence,
+                "signals_rbf": vin_signals_rbf,
+                "relative_locktime_type": relative_locktime_type,
+                "relative_locktime_value": relative_locktime_value,
+            }
+        )
 
     output_values_sats: list[int] = []
     scriptpubkey_bytes = 0
@@ -186,8 +279,9 @@ def aggregate_transaction(
     op_return_script_bytes = 0
     zero_value_output_count = 0
     coinbase_output_addresses: list[str] = []
+    output_events: list[dict[str, Any]] = []
 
-    for vout in vouts:
+    for output_index, vout in enumerate(vouts):
         value_sats = btc_to_sats(vout.get("value"))
         if value_sats is not None:
             output_values_sats.append(value_sats)
@@ -202,17 +296,34 @@ def aggregate_transaction(
         script_type = normalized_script_type(script_pub_key.get("type"))
         vout_type_counts[f"vout_type_{script_type}_count"] += 1
 
-        if script_type == "nulldata":
+        is_op_return = script_type == "nulldata"
+        if is_op_return:
             op_return_count += 1
             op_return_script_bytes += script_bytes
 
+        address = script_pub_key.get("address")
         # Payout addresses are only kept for the coinbase transaction - this
         # is the field the mining pool extractor's address-fallback match
         # reads (see btc_parser_app.rpc.mining_pools.PoolMatcher.match).
-        if is_coinbase:
-            address = script_pub_key.get("address")
-            if address:
-                coinbase_output_addresses.append(address)
+        if is_coinbase and address:
+            coinbase_output_addresses.append(address)
+
+        output_events.append(
+            {
+                "block_hash": block_hash,
+                "block_height": block_height,
+                "block_time": block_time,
+                "tx_index": tx_index,
+                "txid": txid,
+                "is_coinbase": is_coinbase,
+                "output_index": output_index,
+                "value_sats": value_sats,
+                "script_type": script_type,
+                "script_bytes": script_bytes,
+                "address": address,
+                "is_op_return": is_op_return,
+            }
+        )
 
     input_value_sats = sum(input_values_sats) if input_values_sats else 0
     output_value_sats = sum(output_values_sats) if output_values_sats else 0
@@ -276,7 +387,6 @@ def aggregate_transaction(
     if is_coinbase and vins:
         coinbase_script_sig_hex = vins[0].get("coinbase")
 
-    txid = tx.get("txid")
     wtxid = tx.get("hash")
 
     event: dict[str, Any] = {
@@ -342,7 +452,9 @@ def aggregate_transaction(
     event.update(vin_type_counts)
     event.update(vout_type_counts)
 
-    return event, coinbase_script_sig_hex, coinbase_output_addresses
+    return TransactionAggregate(
+        event, coinbase_script_sig_hex, coinbase_output_addresses, input_events, output_events
+    )
 
 
 # ==============================================================================
@@ -360,14 +472,20 @@ def _match_mining_pool(
     return pool_matcher.match(coinbase_script_sig_hex, coinbase_output_addresses)
 
 
+class BlockAggregate(NamedTuple):
+    block_event: dict[str, Any]
+    tx_events: list[dict[str, Any]]
+    input_events: list[dict[str, Any]]
+    output_events: list[dict[str, Any]]
+
+
 def aggregate_block(
     block: dict[str, Any],
     config: RpcConfig,
     pool_matcher: PoolMatcher | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Produce exactly two exportable event types: one block event and one
-    transaction event per transaction. Individual vin/vout events are
-    intentionally not exported.
+) -> BlockAggregate:
+    """Produce four exportable event types: one block event, one transaction
+    event per transaction, and one input/output event per vin/vout.
 
     `pool_matcher` is optional so the RPC parser degrades gracefully (pool_*
     fields come back None) if config/pools-v2.json is missing rather than
@@ -378,10 +496,12 @@ def aggregate_block(
     block_time = int(block["time"])
 
     tx_events: list[dict[str, Any]] = []
+    input_events: list[dict[str, Any]] = []
+    output_events: list[dict[str, Any]] = []
     coinbase_script_sig_hex: str | None = None
     coinbase_output_addresses: list[str] = []
     for tx_index, tx in enumerate(block.get("tx") or []):
-        event, cb_script_sig_hex, cb_addresses = aggregate_transaction(
+        tx_aggregate = aggregate_transaction(
             tx,
             block_hash=block_hash,
             block_height=block_height,
@@ -389,10 +509,12 @@ def aggregate_block(
             tx_index=tx_index,
             config=config,
         )
-        tx_events.append(event)
+        tx_events.append(tx_aggregate.event)
+        input_events.extend(tx_aggregate.input_events)
+        output_events.extend(tx_aggregate.output_events)
         if tx_index == 0:
-            coinbase_script_sig_hex = cb_script_sig_hex
-            coinbase_output_addresses = cb_addresses
+            coinbase_script_sig_hex = tx_aggregate.coinbase_script_sig_hex
+            coinbase_output_addresses = tx_aggregate.coinbase_output_addresses
 
     regular_txs = [tx for tx in tx_events if not tx["is_coinbase"]]
     coinbase_tx = tx_events[0] if tx_events else None
@@ -553,4 +675,4 @@ def aggregate_block(
     block_event.update(vin_type_totals)
     block_event.update(vout_type_totals)
 
-    return block_event, tx_events
+    return BlockAggregate(block_event, tx_events, input_events, output_events)
