@@ -35,11 +35,12 @@ import polars as pl
 
 from btc_parser_app.common.atomic_write import atomic_replace
 from btc_parser_app.common.csv_writer import (
+    MAX_PART_BYTES,
+    all_parts,
     csv_parts_exist,
     existing_part_numbers,
     part_path,
-    read_csv_parts,
-    write_rows_to_csv,
+    read_csv_lenient,
 )
 
 # =============================================================================
@@ -76,21 +77,34 @@ def write_pointer(path: Path, height: int, blockhash: str) -> None:
 # =============================================================================
 
 
+CURRENT_INDEX_SCHEMA_VERSION = 2
+"""Bumped whenever a new per-block event type is added to what "fully
+exported" means for a block (e.g. version 2 added inputs.csv/outputs.csv
+alongside blocks.csv/transactions.csv). IndexRow.schema_version records the
+version a block was last exported at, so IndexStore.needs_export() can tell
+apart a block that's genuinely up to date from one that was indexed under an
+older schema and is missing event types added since - and only the latter
+gets reprocessed. Rows read back from an index.csv written before this
+column existed default to schema_version=1."""
+
+
 @dataclass(frozen=True)
 class IndexRow:
     height: int
     blockhash: str
     previousblockhash: str
+    schema_version: int = 1
 
 
 class IndexStore:
     """In-memory view of index/index.csv. Answers "has this exact blockhash
-    ever been exported" in O(1), and gives blockhash -> previousblockhash
-    lookups for the reorg ancestor walk-back.
+    already been exported at the current event schema" in O(1) via
+    needs_export(), and gives blockhash -> previousblockhash lookups for the
+    reorg ancestor walk-back.
 
     add() only stages a row in memory - it is NOT written to disk and does
-    NOT become visible to contains()/get() until flush() runs. This is
-    deliberate: the caller must only flush() after the corresponding
+    NOT become visible to contains()/needs_export()/get() until flush() runs.
+    This is deliberate: the caller must only flush() after the corresponding
     blocks.csv/transactions.csv rows are durable (see ingest.py's batch
     checkpoints), so index.csv can never claim a block was exported before
     it actually was. Committing eagerly (the old behaviour) meant a crash
@@ -102,52 +116,122 @@ class IndexStore:
         self.path = path
         self._by_hash: dict[str, IndexRow] = {}
         self._pending: dict[str, IndexRow] = {}
+        # Cached instead of rescanned on every flush() (see flush()) - this
+        # one-time scan is the only directory listing IndexStore ever does.
+        self._current_part = max(existing_part_numbers(path), default=1)
         self._load()
 
     def _load(self) -> None:
         if not csv_parts_exist(self.path):
             return
-        frame = read_csv_parts(
-            self.path,
-            schema_overrides={
-                "height": pl.Int64,
-                "blockhash": pl.Utf8,
-                "previousblockhash": pl.Utf8,
-            },
-        )
-        for row in frame.iter_rows(named=True):
-            self._register(int(row["height"]), row["blockhash"], row["previousblockhash"])
+        for part in all_parts(self.path):
+            if part.stat().st_size == 0:
+                continue
+            frame = read_csv_lenient(
+                part,
+                schema_overrides={
+                    "height": pl.Int64,
+                    "blockhash": pl.Utf8,
+                    "previousblockhash": pl.Utf8,
+                    "schema_version": pl.Int64,
+                },
+            )
+            if "schema_version" not in frame.columns:
+                # Written before schema_version existed: only blocks.csv/
+                # transactions.csv were exported for these rows.
+                frame = frame.with_columns(pl.lit(1).alias("schema_version"))
+            for row in frame.iter_rows(named=True):
+                self._register(
+                    int(row["height"]),
+                    row["blockhash"],
+                    row["previousblockhash"],
+                    int(row["schema_version"]),
+                )
 
-    def _register(self, height: int, blockhash: str, previousblockhash: str) -> None:
-        self._by_hash[blockhash] = IndexRow(height, blockhash, previousblockhash or "")
+    def _register(
+        self, height: int, blockhash: str, previousblockhash: str, schema_version: int
+    ) -> None:
+        self._by_hash[blockhash] = IndexRow(
+            height, blockhash, previousblockhash or "", schema_version
+        )
 
     def contains(self, blockhash: str) -> bool:
         return blockhash in self._by_hash
 
+    def needs_export(self, blockhash: str) -> bool:
+        """True if this block has never been indexed, or was last indexed
+        under an older event schema than CURRENT_INDEX_SCHEMA_VERSION and so
+        is missing event types added since (e.g. inputs.csv/outputs.csv)."""
+        row = self._by_hash.get(blockhash) or self._pending.get(blockhash)
+        return row is None or row.schema_version < CURRENT_INDEX_SCHEMA_VERSION
+
     def get(self, blockhash: str) -> IndexRow | None:
         return self._by_hash.get(blockhash)
 
-    def add(self, height: int, blockhash: str, previousblockhash: str) -> None:
-        """Stage a row for this blockhash, unless it's already indexed or
-        already staged (re-attached blocks after a reorg flip-flop must not
-        be exported twice). Call flush() to persist and make visible."""
-        if blockhash in self._by_hash or blockhash in self._pending:
+    def add(
+        self,
+        height: int,
+        blockhash: str,
+        previousblockhash: str,
+        schema_version: int = CURRENT_INDEX_SCHEMA_VERSION,
+    ) -> None:
+        """Stage a row for this blockhash at `schema_version`, unless it's
+        already indexed (or staged) at that version or newer - re-attached
+        blocks after a reorg flip-flop, or a block re-exported only to catch
+        up to a schema bump, must not be exported twice for the same
+        version. Call flush() to persist and make visible."""
+        existing = self._by_hash.get(blockhash) or self._pending.get(blockhash)
+        if existing is not None and existing.schema_version >= schema_version:
             return
-        self._pending[blockhash] = IndexRow(height, blockhash, previousblockhash or "")
+        self._pending[blockhash] = IndexRow(
+            height, blockhash, previousblockhash or "", schema_version
+        )
 
     def flush(self) -> None:
         """Persist staged rows to index.csv and register them for
-        contains()/get(). Call this only after the blocks.csv/
-        transactions.csv rows they correspond to are already durable."""
+        contains()/needs_export()/get(). Call this only after the
+        blocks.csv/transactions.csv/inputs.csv/outputs.csv rows they
+        correspond to are already durable.
+
+        Appends directly to a part path built from the part number cached in
+        __init__ (bumped here on rotation), instead of routing through
+        write_rows_to_csv - which re-scans the directory on every call. This
+        runs once per block forever in steady-state tip-following, so that
+        scan would otherwise happen indefinitely."""
         if not self._pending:
             return
-        write_rows_to_csv(
-            [
-                {"height": r.height, "blockhash": r.blockhash, "previousblockhash": r.previousblockhash}
-                for r in self._pending.values()
-            ],
-            self.path,
-        )
+        rows = [
+            {
+                "height": r.height,
+                "blockhash": r.blockhash,
+                "previousblockhash": r.previousblockhash,
+                "schema_version": r.schema_version,
+            }
+            for r in self._pending.values()
+        ]
+        target = part_path(self.path, self._current_part)
+        file_exists = target.exists() and target.stat().st_size > 0
+        if file_exists and target.stat().st_size >= MAX_PART_BYTES:
+            self._current_part += 1
+            target = part_path(self.path, self._current_part)
+            file_exists = False
+        elif file_exists:
+            with open(target, "r", encoding="utf-8") as f:
+                header = f.readline()
+            if "schema_version" not in header:
+                # This part predates the schema_version column (written by
+                # an older version of this app). Appending new rows - which
+                # now carry an extra field - straight onto it would produce
+                # a ragged CSV that fails to parse back. Roll to a new part
+                # instead, same as an ordinary size-triggered rotation,
+                # so each physical part's columns stay self-consistent.
+                self._current_part += 1
+                target = part_path(self.path, self._current_part)
+                file_exists = False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        frame = pl.DataFrame(rows, infer_schema_length=None)
+        with open(target, mode="a", encoding="utf-8", newline="") as f:
+            frame.write_csv(f, include_header=not file_exists)
         self._by_hash.update(self._pending)
         self._pending.clear()
 
@@ -192,7 +276,15 @@ def seed_index_from_blocks_csv(
         return None
 
     for row in frame.iter_rows(named=True):
-        index.add(int(row["height"]), row["hash"], row["previousblockhash"] or "")
+        # schema_version=1: blocks.csv/transactions.csv existing doesn't
+        # confirm inputs.csv/outputs.csv (or any future event type) were
+        # also exported for these rows, so mark them at the oldest known
+        # schema - needs_export() will correctly flag them for reprocessing
+        # if the loop ever revisits these heights (e.g. after a reorg, or an
+        # operator resetting current.csv to force a backfill).
+        index.add(
+            int(row["height"]), row["hash"], row["previousblockhash"] or "", schema_version=1
+        )
     index.flush()
 
     top = frame.sort("height").row(-1, named=True)
@@ -220,7 +312,7 @@ class BlockStatusStore:
     def _load(self) -> None:
         if not self.path.exists() or self.path.stat().st_size == 0:
             return
-        frame = pl.read_csv(self.path)
+        frame = read_csv_lenient(self.path)
         for row in frame.iter_rows(named=True):
             self._entries[(int(row["height"]), str(row["blockhash"]))] = bool(row["canonical"])
 

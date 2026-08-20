@@ -100,17 +100,20 @@ def _load_mempool_api(raw: dict[str, Any], root: Path) -> MempoolApiConfig:
             "config.yaml: 'mempool_api.rate_limit.bucket_size' must be >= 1"
         )
 
-    endpoints = tuple(
-        EndpointConfig(
+    def _endpoint(e: dict[str, Any]) -> EndpointConfig:
+        interval_seconds = float(_require(e, "interval_seconds", "mempool_api.endpoints[]"))
+        if interval_seconds <= 0:
+            raise ConfigError(
+                "config.yaml: 'mempool_api.endpoints[].interval_seconds' must be > 0"
+            )
+        return EndpointConfig(
             name=_require(e, "name", "mempool_api.endpoints[]"),
             path=_require(e, "path", "mempool_api.endpoints[]"),
             parser=_require(e, "parser", "mempool_api.endpoints[]"),
-            interval_seconds=float(
-                _require(e, "interval_seconds", "mempool_api.endpoints[]")
-            ),
+            interval_seconds=interval_seconds,
         )
-        for e in endpoints_raw
-    )
+
+    endpoints = tuple(_endpoint(e) for e in endpoints_raw)
 
     return MempoolApiConfig(
         base_url=str(_require(section, "base_url", "mempool_api")).rstrip("/"),
@@ -237,8 +240,8 @@ def _load_rpc(raw: dict[str, Any], root: Path) -> RpcConfig:
         raise ConfigError("config.yaml: 'rpc.max_reorg_depth' must be >= 1")
 
     poll_interval_seconds = float(section.get("poll_interval_seconds", 30))
-    if poll_interval_seconds < 0:
-        raise ConfigError("config.yaml: 'rpc.poll_interval_seconds' must be >= 0")
+    if poll_interval_seconds <= 0:
+        raise ConfigError("config.yaml: 'rpc.poll_interval_seconds' must be > 0")
 
     max_cli_retries = int(section.get("max_cli_retries", 3))
     if max_cli_retries < 0:

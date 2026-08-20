@@ -46,7 +46,12 @@ def handle_rate_limited(
     rate limiter: log it, then set both events so the caller's own loop
     exits and every other thread sharing rate_limited_event/stop_event wakes
     and halts with it, instead of a per-caller copy of this logic drifting."""
-    logger.error("%s: %s - stopping poller.", context, exc)
+    logger.error(
+        "%s: %s - stopping poller (server asked us to wait %s before retrying).",
+        context,
+        exc,
+        exc.retry_after,
+    )
     rate_limited_event.set()
     stop_event.set()
 

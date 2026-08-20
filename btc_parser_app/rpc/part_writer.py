@@ -115,7 +115,18 @@ class PartSequencer:
         still open. A no-op if it's already closed, or was never actually
         written to (allocated but empty - can't happen in practice, since a
         part number is only ever advanced right before writing to it, but
-        guarded anyway since a missing source is harmless to skip)."""
+        guarded anyway since a missing source is harmless to skip).
+
+        Persists right after the rename, not just at the end of the caller's
+        write_batched()/write_atomic() call: a crash between the rename and a
+        later persist would otherwise leave the counter file claiming this
+        part is still open under state_base after it's already been moved to
+        export_base - on restart, the next append would then silently create
+        a fresh file reusing this part number, which would go on to overwrite
+        the already-exported (possibly Splunk-consumed) part when it rotates.
+        Persisting here first means a crash before the counter update is
+        durable, at worst, wastes/duplicates a few not-yet-exported rows into
+        a re-opened part - never overwrites one already handed off."""
         if not self._part_is_open:
             return
         src = part_path(self.state_base, self._current_part)
@@ -124,6 +135,7 @@ class PartSequencer:
             dst.parent.mkdir(parents=True, exist_ok=True)
             os.replace(src, dst)
         self._part_is_open = False
+        self._persist()
 
     def write_batched(self, rows: list[dict[str, Any]]) -> None:
         """Append rows to the current part under state_base, rotating to a
