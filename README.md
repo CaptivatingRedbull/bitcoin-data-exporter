@@ -1,5 +1,9 @@
 # btc_parser_app
 
+> For a full German-language reference (architecture, every config
+> option, every output file/schema, ingestion guidance, source-file-by-
+> source-file walkthrough), see [`docs/`](docs/00-index.md).
+
 A Bitcoin block/mempool/price data pipeline with three independent
 long-running processes/services instead of one multithreaded main script -
 they don't share state or failure domains, so a 429 on the API side never
