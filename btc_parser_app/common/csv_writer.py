@@ -29,6 +29,8 @@ from typing import Any
 
 import polars as pl
 
+from btc_parser_app.common.atomic_write import atomic_replace
+
 logger = logging.getLogger(__name__)
 
 # Soft cap per part. Rotation is only checked before a write, so a part can
@@ -136,6 +138,28 @@ def read_csv_parts(base_path: Path, **read_csv_kwargs: Any) -> pl.DataFrame:
     if not frames:
         return pl.DataFrame()
     return pl.concat(frames, how="vertical_relaxed")
+
+
+def read_single_row_csv(path: Path) -> dict[str, Any] | None:
+    """Read a single-row state/pointer CSV (current.csv, latest.csv, the
+    *_part_seq.csv counters, ...) back into a dict, or None if it doesn't
+    exist yet or is empty (first-ever run). Shared by every such file's
+    read/write pair instead of each hand-rolling the same exists/empty/
+    row(0) dance with its own field names."""
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    frame = pl.read_csv(path)
+    if frame.is_empty():
+        return None
+    return frame.row(0, named=True)
+
+
+def write_single_row_csv(path: Path, row: dict[str, Any]) -> None:
+    """Atomically overwrite a single-row state/pointer CSV with `row`
+    (temp file + rename), so a crash mid-write leaves the previous, still-
+    valid row in place instead of a truncated file that would crash
+    read_single_row_csv on the next startup."""
+    atomic_replace(path, lambda tmp: pl.DataFrame([row]).write_csv(tmp))
 
 
 def _current_part_for_append(base_path: Path, max_part_bytes: int) -> Path:

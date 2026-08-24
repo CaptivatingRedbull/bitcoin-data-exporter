@@ -77,6 +77,7 @@ from btc_parser_app.rpc.client import (
 from btc_parser_app.rpc.mining_pools import PoolMatcher, load_pool_matcher
 from btc_parser_app.rpc.part_writer import PartSequencer
 from btc_parser_app.rpc.reorg_state import (
+    CURRENT_INDEX_SCHEMA_VERSION,
     BlockStatusStore,
     IndexStore,
     read_pointer,
@@ -317,6 +318,26 @@ def _run_one_pass(
                 rpc_config, index, block_status, reorg_dir, current_height, current_hash
             )
 
+    # The forward loop below only (re)visits heights it's actively walking
+    # through, so a block indexed under an older event schema (e.g. before
+    # inputs.csv/outputs.csv were added) would otherwise never get picked
+    # back up on its own. Rewind far enough to reprocess it if one exists.
+    stale = index.earliest_stale()
+    if stale is not None and stale.height - 1 < current_height:
+        rewind_to = stale.height - 1
+        logger.warning(
+            "Block %d (%s) was indexed under event schema %d (current is %d) - "
+            "rewinding from height %d to %d to backfill the event types added since.",
+            stale.height,
+            stale.blockhash,
+            stale.schema_version,
+            CURRENT_INDEX_SCHEMA_VERSION,
+            current_height,
+            rewind_to,
+        )
+        current_height = rewind_to
+        current_hash = stale.previousblockhash or None
+
     if current_height >= latest_height:
         write_pointer(current_path, current_height, current_hash)
         block_status.flush()
@@ -366,14 +387,8 @@ def _run_one_pass(
         last_processed_height = height
         processed += 1
 
-        if atomic_mode:
-            _drain(batch_buffers, sequencers, atomic=True)
-            index.flush()
-            block_status.flush()
-            write_pointer(current_path, last_processed_height, last_hash)
-            logger.info("Exported block %d (%s) as its own part.", height, last_hash)
-        elif processed % rpc_config.batch_size == 0:
-            _drain(batch_buffers, sequencers, atomic=False)
+        if atomic_mode or processed % rpc_config.batch_size == 0:
+            _drain(batch_buffers, sequencers, atomic=atomic_mode)
             index.flush()
             # block_status is flushed before the pointer is advanced: its
             # entries are idempotent to redo (set_canonical_if_present() is a
@@ -383,15 +398,18 @@ def _run_one_pass(
             # disk - the worst case is instead a harmless re-check on restart.
             block_status.flush()
             write_pointer(current_path, last_processed_height, last_hash)
-            elapsed = time.perf_counter() - start_time
-            bps = processed / elapsed if elapsed > 0 else 0
-            logger.info(
-                "Progress: height %d/%d (%d behind tip), %.2f blocks/s",
-                last_processed_height,
-                latest_height,
-                tip - last_processed_height,
-                bps,
-            )
+            if atomic_mode:
+                logger.info("Exported block %d (%s) as its own part.", height, last_hash)
+            else:
+                elapsed = time.perf_counter() - start_time
+                bps = processed / elapsed if elapsed > 0 else 0
+                logger.info(
+                    "Progress: height %d/%d (%d behind tip), %.2f blocks/s",
+                    last_processed_height,
+                    latest_height,
+                    tip - last_processed_height,
+                    bps,
+                )
 
     _drain(batch_buffers, sequencers, atomic=atomic_mode)
     index.flush()
@@ -478,7 +496,12 @@ def run_rpc_ingest(config: AppConfig) -> None:
             # partition) - run_cli already retried rpc.max_cli_retries
             # times per call. Back off and try the whole pass again next
             # cycle instead of crashing the daemon; any progress already
-            # checkpointed to current.csv is unaffected.
+            # checkpointed to current.csv is unaffected. Blocks staged via
+            # index.add() since the last flush() were never made durable in
+            # blocks.csv/transactions.csv/inputs.csv/outputs.csv, so discard
+            # them - otherwise the retry's needs_export() would wrongly see
+            # them as already exported and skip re-writing their rows.
+            index.discard_pending()
             logger.error(
                 "RPC unreachable after retries (%s); backing off %.0fs before retrying.",
                 exc,

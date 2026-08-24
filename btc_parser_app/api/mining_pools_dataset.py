@@ -98,7 +98,7 @@ def refresh_if_stale(config: MiningPoolsDatasetConfig) -> bool:
     try:
         refresh(config)
         return True
-    except (FetchError, RateLimited, ValueError) as exc:
+    except (FetchError, RateLimited, ValueError, OSError) as exc:
         if config.local_path.exists():
             logger.warning(
                 "Failed to refresh %s (%s) - keeping existing copy.",

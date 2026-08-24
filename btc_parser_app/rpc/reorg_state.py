@@ -41,6 +41,8 @@ from btc_parser_app.common.csv_writer import (
     existing_part_numbers,
     part_path,
     read_csv_lenient,
+    read_single_row_csv,
+    write_single_row_csv,
 )
 
 # =============================================================================
@@ -51,12 +53,9 @@ from btc_parser_app.common.csv_writer import (
 def read_pointer(path: Path) -> tuple[int, str] | None:
     """Read a single-row (height,blockhash) pointer file, or None if it
     doesn't exist yet (first-ever run)."""
-    if not path.exists() or path.stat().st_size == 0:
+    row = read_single_row_csv(path)
+    if row is None:
         return None
-    frame = pl.read_csv(path)
-    if frame.is_empty():
-        return None
-    row = frame.row(0, named=True)
     return int(row["height"]), str(row["blockhash"])
 
 
@@ -66,10 +65,7 @@ def write_pointer(path: Path, height: int, blockhash: str) -> None:
     Written atomically (temp file + rename) so a crash mid-write leaves the
     previous, still-valid pointer in place instead of a truncated file that
     would crash read_pointer on the next startup."""
-    atomic_replace(
-        path,
-        lambda tmp: pl.DataFrame([{"height": height, "blockhash": blockhash}]).write_csv(tmp),
-    )
+    write_single_row_csv(path, {"height": height, "blockhash": blockhash})
 
 
 # =============================================================================
@@ -119,6 +115,10 @@ class IndexStore:
         # Cached instead of rescanned on every flush() (see flush()) - this
         # one-time scan is the only directory listing IndexStore ever does.
         self._current_part = max(existing_part_numbers(path), default=1)
+        # Set True once earliest_stale() finds nothing left to backfill, so
+        # later calls (one per _run_one_pass, see ingest.py) short-circuit
+        # instead of rescanning every row again in steady state.
+        self._all_current = False
         self._load()
 
     def _load(self) -> None:
@@ -168,6 +168,27 @@ class IndexStore:
     def get(self, blockhash: str) -> IndexRow | None:
         return self._by_hash.get(blockhash)
 
+    def earliest_stale(self) -> IndexRow | None:
+        """The lowest-height indexed row whose schema_version is older than
+        CURRENT_INDEX_SCHEMA_VERSION, or None if every indexed block is
+        already current. needs_export() only ever gets checked by the
+        forward ingest loop (see ingest.py's _process_height) for heights it
+        is actively (re)visiting - it never walks back over already-recorded
+        history on its own, so without this, a block indexed before a schema
+        bump (e.g. the one that added inputs.csv/outputs.csv) would stay
+        stale forever unless it happens to fall inside a reorg's walk-back
+        range. The caller uses this to rewind current.csv far enough to pick
+        such blocks back up."""
+        if self._all_current:
+            return None
+        stale = [
+            r for r in self._by_hash.values() if r.schema_version < CURRENT_INDEX_SCHEMA_VERSION
+        ]
+        if not stale:
+            self._all_current = True
+            return None
+        return min(stale, key=lambda r: r.height)
+
     def add(
         self,
         height: int,
@@ -186,6 +207,15 @@ class IndexStore:
         self._pending[blockhash] = IndexRow(
             height, blockhash, previousblockhash or "", schema_version
         )
+
+    def discard_pending(self) -> None:
+        """Drop every staged-but-not-yet-flushed row. Call this when a pass
+        is abandoned partway through (e.g. an RpcCliError aborts
+        _run_one_pass before its next flush() checkpoint) - otherwise those
+        blocks stay staged across the retry, needs_export() wrongly reports
+        them as already exported, and they get skipped without ever having
+        had their rows written."""
+        self._pending.clear()
 
     def flush(self) -> None:
         """Persist staged rows to index.csv and register them for
@@ -257,7 +287,7 @@ def seed_index_from_blocks_csv(
             parts[number] = part_path(base, number)
 
     frames = [
-        pl.read_csv(
+        read_csv_lenient(
             p,
             columns=["height", "hash", "previousblockhash"],
             schema_overrides={
