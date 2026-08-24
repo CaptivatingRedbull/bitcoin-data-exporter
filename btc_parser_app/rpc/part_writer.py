@@ -51,26 +51,20 @@ from btc_parser_app.common.csv_writer import (
     MAX_PART_BYTES,
     existing_part_numbers,
     part_path,
+    read_single_row_csv,
+    write_single_row_csv,
 )
 
 
 def _read_state(path: Path) -> tuple[int, bool] | None:
-    if not path.exists() or path.stat().st_size == 0:
+    row = read_single_row_csv(path)
+    if row is None:
         return None
-    frame = pl.read_csv(path)
-    if frame.is_empty():
-        return None
-    row = frame.row(0, named=True)
     return int(row["current_part"]), bool(row["part_is_open"])
 
 
 def _write_state(path: Path, current_part: int, part_is_open: bool) -> None:
-    atomic_replace(
-        path,
-        lambda tmp: pl.DataFrame(
-            [{"current_part": current_part, "part_is_open": part_is_open}]
-        ).write_csv(tmp),
-    )
+    write_single_row_csv(path, {"current_part": current_part, "part_is_open": part_is_open})
 
 
 class PartSequencer:
@@ -104,7 +98,13 @@ class PartSequencer:
                 state = (state_highest, True)
             else:
                 export_highest = max(existing_part_numbers(export_base), default=0)
-                state = (export_highest, False) if export_highest else (1, True)
+                # Genuinely fresh start: part_is_open=False with part 0 means
+                # the first write_batched()/write_atomic() call increments
+                # to part 1 (base_path itself, per _part_path's contract)
+                # before writing anything - seeding (1, True) here instead
+                # would make that first call treat part 1 as already open
+                # and skip straight to part 2, leaving part 1 never written.
+                state = (export_highest, False) if export_highest else (0, False)
         self._current_part, self._part_is_open = state
 
     def _persist(self) -> None:
@@ -171,8 +171,15 @@ class PartSequencer:
         self._close_if_open()
         self._current_part += 1
         self._part_is_open = False
+        # Persist the counter before writing, not after: once atomic_replace
+        # below succeeds, this part is immediately live under export_base
+        # (possibly already Splunk-consumed). Persisting first means a crash
+        # between the two, at worst, skips this part number on the next
+        # write - persisting after would instead let a crash there make the
+        # next write_atomic() reuse this same number and silently overwrite
+        # the part just written.
+        self._persist()
         target = part_path(self.export_base, self._current_part)
         target.parent.mkdir(parents=True, exist_ok=True)
         frame = pl.DataFrame(rows, infer_schema_length=None)
         atomic_replace(target, lambda tmp: frame.write_csv(tmp))
-        self._persist()

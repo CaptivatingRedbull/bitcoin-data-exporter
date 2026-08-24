@@ -84,6 +84,22 @@ class ApiClient:
         except ValueError as exc:
             raise FetchError(f"{url}: failed to decode JSON: {exc}") from exc
 
+    def get_text(self, url: str) -> str:
+        """GET url and return the raw response body as text.
+
+        Raises RateLimited on HTTP 429 and FetchError for anything else
+        that isn't a clean 200. Blocks on the shared rate limiter before
+        every attempt, including retries.
+        """
+        response = self._get_with_retry(url)
+        if response.status_code == 429:
+            raise RateLimited(response.headers.get("Retry-After", "unknown"))
+        if response.status_code != 200:
+            raise FetchError(
+                f"{url}: unexpected status {response.status_code}: {response.text[:200]!r}"
+            )
+        return response.text
+
     def _get_with_retry(self, url: str) -> requests.Response:
         last_exc: Exception | None = None
         for attempt in range(self.max_connection_retries + 1):

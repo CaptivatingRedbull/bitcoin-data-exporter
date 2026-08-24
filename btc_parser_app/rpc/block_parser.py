@@ -523,24 +523,70 @@ def aggregate_block(
         coinbase_script_sig_hex, coinbase_output_addresses, pool_matcher
     )
 
-    known_fees = [
-        int(tx["fee_sats"]) for tx in regular_txs if tx["fee_sats"] is not None
-    ]
-    known_fee_rates = [
-        float(tx["fee_rate_sat_vb"])
-        for tx in regular_txs
-        if tx["fee_rate_sat_vb"] is not None
-    ]
-    regular_vsizes = [int(tx["vsize"] or 0) for tx in regular_txs]
+    # Block-level aggregates over tx_events/regular_txs, accumulated in a
+    # single pass over each list instead of one full sum()/comprehension
+    # traversal per field (same rationale as the script-type totals below,
+    # for a block with potentially thousands of transactions).
+    total_vin_count = 0
+    total_vout_count = 0
+    coin_days_destroyed_btc = 0.0
+    vsize_values: list[int] = []
+    segwit_tx_count = 0
+    taproot_output_tx_count = 0
+    op_return_tx_count = 0
+    op_return_output_count = 0
+    op_return_script_bytes = 0
+    witness_input_count = 0
+    witness_item_count = 0
+    witness_data_bytes = 0
+    scriptsig_bytes = 0
+    scriptpubkey_bytes = 0
+    for tx in tx_events:
+        total_vin_count += int(tx["vin_count"])
+        total_vout_count += int(tx["vout_count"])
+        coin_days_destroyed_btc += float(tx["coin_days_destroyed_btc"])
+        vsize_values.append(int(tx["vsize"] or 0))
+        if int(tx["witness_input_count"]) > 0:
+            segwit_tx_count += 1
+        if int(tx["vout_type_witness_v1_taproot_count"]) > 0:
+            taproot_output_tx_count += 1
+        op_return_count = int(tx["op_return_count"])
+        if op_return_count > 0:
+            op_return_tx_count += 1
+        op_return_output_count += op_return_count
+        op_return_script_bytes += int(tx["op_return_script_bytes"])
+        witness_input_count += int(tx["witness_input_count"])
+        witness_item_count += int(tx["witness_item_count"])
+        witness_data_bytes += int(tx["witness_data_bytes"])
+        scriptsig_bytes += int(tx["scriptsig_bytes"])
+        scriptpubkey_bytes += int(tx["scriptpubkey_bytes"])
+
+    known_fees: list[int] = []
+    known_fee_rates: list[float] = []
+    total_regular_vsize = 0
+    rbf_tx_count = 0
+    taproot_input_tx_count = 0
+    input_value_complete_tx_count = 0
+    regular_input_value_sats = 0
+    regular_output_value_sats = 0
+    for tx in regular_txs:
+        if tx["fee_sats"] is not None:
+            known_fees.append(int(tx["fee_sats"]))
+        if tx["fee_rate_sat_vb"] is not None:
+            known_fee_rates.append(float(tx["fee_rate_sat_vb"]))
+        total_regular_vsize += int(tx["vsize"] or 0)
+        if tx["signals_rbf"]:
+            rbf_tx_count += 1
+        if int(tx["vin_type_witness_v1_taproot_count"]) > 0:
+            taproot_input_tx_count += 1
+        # regular_txs excludes the coinbase tx, so prevout_values_complete's
+        # is_coinbase branch never applies here - just compare the two counts.
+        if tx["prevout_value_known_count"] == tx["vin_count"]:
+            input_value_complete_tx_count += 1
+            regular_input_value_sats += int(tx["input_value_sats"] or 0)
+        regular_output_value_sats += int(tx["output_value_sats"])
 
     total_fees_sats = sum(known_fees)
-    total_regular_vsize = sum(regular_vsizes)
-
-    # regular_txs excludes the coinbase tx, so prevout_values_complete's
-    # is_coinbase branch never applies here - just compare the two counts.
-    input_value_known_txs = [
-        tx for tx in regular_txs if tx["prevout_value_known_count"] == tx["vin_count"]
-    ]
 
     block_event: dict[str, Any] = {
         # Original block fields
@@ -586,8 +632,8 @@ def aggregate_block(
         "pool_match_method": pool_match.match_method,
         # Transaction/value aggregates
         "regular_tx_count": len(regular_txs),
-        "total_vin_count": sum(int(tx["vin_count"]) for tx in tx_events),
-        "total_vout_count": sum(int(tx["vout_count"]) for tx in tx_events),
+        "total_vin_count": total_vin_count,
+        "total_vout_count": total_vout_count,
         "coinbase_value_sats": (
             int(coinbase_tx["output_value_sats"]) if coinbase_tx else None
         ),
@@ -615,48 +661,32 @@ def aggregate_block(
             else None
         ),
         # Aggregate flow values. These are transaction-flow sums, not "new BTC".
-        "regular_input_value_sats": sum(
-            int(tx["input_value_sats"] or 0) for tx in input_value_known_txs
-        ),
-        "input_value_complete_tx_count": len(input_value_known_txs),
-        "regular_output_value_sats": sum(
-            int(tx["output_value_sats"]) for tx in regular_txs
-        ),
-        "coin_days_destroyed_btc": sum(
-            float(tx["coin_days_destroyed_btc"]) for tx in tx_events
-        ),
+        "regular_input_value_sats": regular_input_value_sats,
+        "input_value_complete_tx_count": input_value_complete_tx_count,
+        "regular_output_value_sats": regular_output_value_sats,
+        "coin_days_destroyed_btc": coin_days_destroyed_btc,
         # Transaction shape
         "tx_vsize_avg": (
-            float(sum(int(tx["vsize"] or 0) for tx in tx_events) / len(tx_events))
-            if tx_events
-            else None
+            float(sum(vsize_values) / len(tx_events)) if tx_events else None
         ),
-        "tx_vsize_median": median_or_none([int(tx["vsize"] or 0) for tx in tx_events]),
-        "tx_vsize_max": (
-            max(int(tx["vsize"] or 0) for tx in tx_events) if tx_events else None
-        ),
+        "tx_vsize_median": median_or_none(vsize_values),
+        "tx_vsize_max": max(vsize_values) if vsize_values else None,
         # Feature adoption / behavior - each derived from an already-summed
         # count field rather than a per-tx boolean, since has_witness/
         # has_taproot_input/has_taproot_output/has_op_return were dropped
         # from the exported transaction row as pure duplicates of these.
-        "segwit_tx_count": sum(int(tx["witness_input_count"]) > 0 for tx in tx_events),
-        "rbf_tx_count": sum(bool(tx["signals_rbf"]) for tx in regular_txs),
-        "taproot_input_tx_count": sum(
-            int(tx["vin_type_witness_v1_taproot_count"]) > 0 for tx in regular_txs
-        ),
-        "taproot_output_tx_count": sum(
-            int(tx["vout_type_witness_v1_taproot_count"]) > 0 for tx in tx_events
-        ),
-        "op_return_tx_count": sum(int(tx["op_return_count"]) > 0 for tx in tx_events),
-        "op_return_output_count": sum(int(tx["op_return_count"]) for tx in tx_events),
-        "op_return_script_bytes": sum(
-            int(tx["op_return_script_bytes"]) for tx in tx_events
-        ),
-        "witness_input_count": sum(int(tx["witness_input_count"]) for tx in tx_events),
-        "witness_item_count": sum(int(tx["witness_item_count"]) for tx in tx_events),
-        "witness_data_bytes": sum(int(tx["witness_data_bytes"]) for tx in tx_events),
-        "scriptsig_bytes": sum(int(tx["scriptsig_bytes"]) for tx in tx_events),
-        "scriptpubkey_bytes": sum(int(tx["scriptpubkey_bytes"]) for tx in tx_events),
+        "segwit_tx_count": segwit_tx_count,
+        "rbf_tx_count": rbf_tx_count,
+        "taproot_input_tx_count": taproot_input_tx_count,
+        "taproot_output_tx_count": taproot_output_tx_count,
+        "op_return_tx_count": op_return_tx_count,
+        "op_return_output_count": op_return_output_count,
+        "op_return_script_bytes": op_return_script_bytes,
+        "witness_input_count": witness_input_count,
+        "witness_item_count": witness_item_count,
+        "witness_data_bytes": witness_data_bytes,
+        "scriptsig_bytes": scriptsig_bytes,
+        "scriptpubkey_bytes": scriptpubkey_bytes,
     }
 
     # Block-level script type distributions - accumulated in a single pass
