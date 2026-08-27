@@ -154,10 +154,13 @@ Zeile pro Poll insgesamt):
 Ein HTTP-429 von `mempool.space` wird **nie automatisch wiederholt** –
 `RateLimited` wird geworfen, `handle_rate_limited()` setzt sowohl
 `rate_limited_event` als auch `stop_event`, und **jeder** Endpunkt-Thread
-hält an. `run_poller()` gibt Exit-Code 1 zurück, wenn der Stopp durch
-einen 429 ausgelöst wurde, sonst 0. Diese bewusste "kompletter Stopp
-statt automatischer Wiederholung"-Entscheidung ist in Kapitel 9 näher
-begründet.
+hält an. `run_poller()` gibt `EXIT_RATE_LIMITED` (75) zurück, wenn der
+Stopp durch einen 429 ausgelöst wurde, sonst 0 – bewusst nicht der
+generische Exit-Code 1, den auch ein unbehandelter Absturz liefern würde,
+damit eine systemd-Unit per `RestartPreventExitStatus` zwischen beiden
+Fällen unterscheiden kann (siehe Kapitel 2.5 und 9.3). Diese bewusste
+"kompletter Stopp statt automatischer Wiederholung"-Entscheidung ist in
+Kapitel 9 näher begründet.
 
 Transiente Verbindungsfehler (Reset, SSL-EOF, DNS-Hänger) sind davon
 getrennt: `client.py` wiederholt diese bis zu

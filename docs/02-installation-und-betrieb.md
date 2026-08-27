@@ -181,25 +181,63 @@ die sich ändern können (z. B. bei einer Neuzuweisung der Pod-IP) und
 daher an einer einzigen Stelle gepflegt werden sollten statt dupliziert
 in dieser Dokumentation.
 
-### Empfehlung für einen gehärteten Dauerbetrieb
+### Gehärteter Dauerbetrieb: systemd-Units
 
-Für einen produktiven Linux-Host empfiehlt sich, die drei
-`python run.py rpc-ingest` / `python run.py stale-blocks-ingest` /
-`python run.py api-poll`-Kommandos statt über `start.sh`/`stop.sh` jeweils
-in eine eigene systemd-Unit zu verpacken:
+Für einen produktiven Linux-Host (getestet auf SUSE Linux Enterprise
+Server 15) liegen unter [`systemd/`](../systemd/) fertige Unit-Templates
+für die drei Dauerlauf-Kommandos plus ein `btc-parser.target`, das alle
+drei gruppiert. Installiert werden sie mit:
 
-- eigenes Log pro Dienst (`journalctl -u <unit>` zusätzlich zu den
-  Dateilogs unter `logs/`)
-- eigene Restart-Policy, z. B. `Restart=on-failure` mit einem sinnvollen
-  `RestartSec` – insbesondere relevant für `api-poll`, das bei einem
-  HTTP-429 bewusst **nicht** automatisch neu startet (siehe Kapitel 9)
+```sh
+sudo systemd/install.sh                          # config/config.yaml
+sudo systemd/install.sh --config config/config.production.yaml
+```
+
+Das Skript ermittelt `APP_DIR` selbst (das Verzeichnis, in dem es liegt),
+prüft, dass die venv existiert, verweigert die Installation, falls
+`start.sh` dieselben Prozesse gerade schon per PID-Datei trackt (sonst
+liefen zwei Kopien gegeneinander auf denselben Output-/State-Dateien),
+schreibt die drei `.service`-Dateien plus das Target nach
+`/etc/systemd/system/`, aktiviert sie (`systemctl enable`) und startet sie.
+Deinstallation: `sudo systemd/install.sh --uninstall`.
+
+Jede installierte Unit bringt mit:
+
+- eigenes Log pro Dienst (`journalctl -u btc-parser-<name>.service`
+  zusätzlich zu den Dateilogs unter `logs/`)
+- `Restart=on-failure` mit `RestartSec=30` – ein abgestürzter Prozess
+  kommt automatisch wieder hoch, ohne bei einem harten Dauerfehler
+  endlos im Sekundentakt neu zu starten (`StartLimitBurst=5` je
+  `StartLimitIntervalSec=600`)
 - sauberes Stop-Signal: `KillSignal=SIGTERM` (Standard) genügt, da alle
   drei Kommandos `SIGTERM` bereits sauber behandeln
+- `WantedBy=btc-parser.target` (`btc-parser.target` selbst ist
+  `WantedBy=multi-user.target`) – nach einem Reboot (z. B. dem
+  wöchentlichen Wartungs-Reboot dieses Hosts) starten alle drei Dienste
+  automatisch neu, unabhängig davon, wie/warum sie zuvor gestoppt wurden
 
-`start.sh`/`stop.sh` decken lokale/Dev-Umgebungen und einfache
-Dauerbetriebs-Hosts ab, starten einen abgestürzten Prozess aber nicht
-automatisch neu – das ist der Hauptunterschied zu einer
-`Restart=always`-systemd-Unit.
+**Sonderfall `api-poll` und HTTP-429:** `api-poll` hält bei einem 429
+bewusst komplett an (Kapitel 9) und beendet sich dafür mit einem eigenen
+Exit-Code **75** (`EXIT_RATE_LIMITED` in `btc_parser_app/api/poller.py`)
+statt des generischen 1, den auch ein echter Absturz liefern würde. Die
+installierte Unit nutzt genau das über `RestartPreventExitStatus=75`:
+
+| Ereignis | Exit-Code | Reaktion der Unit |
+|---|---|---|
+| Echter Absturz (unbehandelte Exception) | 1 (o. Ä.) | `Restart=on-failure` startet nach 30s neu |
+| Sauberer Stop (`systemctl stop`) | 0 | kein Neustart (wie bei jedem `Restart=on-failure`) |
+| HTTP 429 | 75 | **kein** automatischer Neustart – Unit bleibt `inactive (dead)` (nicht `failed`), bis manuell `systemctl start btc-parser-api-poll.service` ausgeführt wird oder der Host neu bootet |
+
+Damit hämmert ein 429 nicht sofort wieder gegen mempool.space, während
+der wöchentliche Reboot trotzdem zuverlässig alle drei Dienste
+zurückbringt – siehe die Kommentare in
+[`systemd/btc-parser-api-poll.service.template`](../systemd/btc-parser-api-poll.service.template)
+für die volle Herleitung.
+
+`start.sh`/`stop.sh` bleiben für lokale/Dev-Umgebungen und schnelle
+manuelle Checks nutzbar, sollten aber nicht **gleichzeitig** mit den
+systemd-Units gegen dieselbe Konfiguration laufen (s. o., PID-Check in
+`install.sh`).
 
 ## 2.6 CLI-Kommandoreferenz
 
@@ -207,7 +245,7 @@ automatisch neu – das ist der Hauptunterschied zu einer
 |---|---|---|---|---|
 | `rpc-ingest` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 4 |
 | `stale-blocks-ingest` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 5 |
-| `api-poll` | dauerhaft | `SIGTERM`/`SIGINT`/HTTP 429 | 0 (sauberer Stop) / 1 (429) | Siehe Kapitel 6 |
+| `api-poll` | dauerhaft | `SIGTERM`/`SIGINT`/HTTP 429 | 0 (sauberer Stop) / 75 (429) | Siehe Kapitel 6 |
 | `update-pools-dataset` | einmalig | selbst | 0 / 1 (Fehler) | Siehe Kapitel 4 |
 | `import-price-history` | einmalig | selbst | 0 / 1 (Fehler) | Siehe Kapitel 6 |
 

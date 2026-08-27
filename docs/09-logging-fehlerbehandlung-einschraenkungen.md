@@ -66,13 +66,19 @@ werden sollten:
 ### Kein Auto-Restart nach einem 429
 
 `api-poll` hält bei einem HTTP-429 von mempool.space bewusst komplett an
-(Exit-Code 1) statt automatisch weiterzuversuchen – das erfordert
-manuelles Eingreifen (Prozess neu starten, ggf. Poll-Intervalle
-anpassen). Für den Dauerbetrieb empfiehlt sich eine systemd-Unit mit
-`Restart=on-failure` und einem sinnvollen `RestartSec`, damit ein 429
-nicht zu dauerhaftem Stillstand führt, ohne dass ein reines "sofort
-wieder anfragen" die eigentliche Ursache (zu aggressive Rate)
-verschlimmert (siehe Kapitel 2.5).
+(Exit-Code `EXIT_RATE_LIMITED` = 75, siehe `btc_parser_app/api/poller.py`)
+statt automatisch weiterzuversuchen – das erfordert manuelles Eingreifen
+(Prozess neu starten, ggf. Poll-Intervalle anpassen). Der eigene
+Exit-Code (statt des generischen 1, den auch ein unbehandelter Absturz
+liefern würde) existiert genau dafür: Die unter [`systemd/`](../systemd/)
+bereitgestellte `btc-parser-api-poll.service`-Unit (installierbar über
+`sudo systemd/install.sh`, siehe Kapitel 2.5) kombiniert
+`Restart=on-failure` mit `RestartPreventExitStatus=75` – ein echter
+Absturz wird neu gestartet, ein 429-Stopp explizit **nicht**, sodass ein
+reines "sofort wieder anfragen" die eigentliche Ursache (zu aggressive
+Rate) nicht verschlimmert. Der wöchentliche Reboot dieses Hosts bringt
+den Dienst trotzdem zuverlässig zurück, da das ein normaler
+Boot-Start der aktivierten Unit ist, kein `Restart=on-failure`-Trigger.
 
 ### Kein automatisches Storage-Cleanup
 

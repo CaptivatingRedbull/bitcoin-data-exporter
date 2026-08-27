@@ -1,0 +1,48 @@
+# Installed by systemd/install.sh as /etc/systemd/system/btc-parser-api-poll.service
+# (APP_DIR and APP_USER filled in by that script). Do not edit the installed copy by
+# hand - re-run install.sh instead, it's idempotent.
+[Unit]
+Description=btc_parser_app - mempool.space endpoint poller (api-poll)
+Documentation=file://{{APP_DIR}}/docs/06-api-poller-und-pricing.md
+PartOf=btc-parser.target
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{APP_USER}}
+WorkingDirectory={{APP_DIR}}
+EnvironmentFile=-{{APP_DIR}}/systemd/env
+ExecStart=/bin/sh -c '"{{APP_DIR}}/.venv/bin/python" "{{APP_DIR}}/run.py" ${BTC_PARSER_CONFIG:+--config "$BTC_PARSER_CONFIG"} api-poll'
+
+# api-poll deliberately halts the whole process on an HTTP 429 instead of
+# retrying (see docs/09-logging-fehlerbehandlung-einschraenkungen.md) and
+# exits with EXIT_RATE_LIMITED=75 (btc_parser_app/api/poller.py) so this
+# specific case is distinguishable from a genuine crash (Python's default
+# exit code for an unhandled exception is 1, which IS restarted below).
+#
+#   - Real crash (exit 1, or anything other than 0/75) -> Restart=on-failure
+#     retries after RestartSec, up to StartLimitBurst times per
+#     StartLimitIntervalSec before systemd gives up and leaves the unit
+#     "failed" (needs `systemctl reset-failed` + a manual start).
+#   - Clean stop (`systemctl stop`, exit 0) -> not restarted, as usual for
+#     Restart=on-failure.
+#   - HTTP 429 (exit 75) -> RestartPreventExitStatus excludes it from the
+#     on-failure restart entirely. The unit goes "inactive (dead)", NOT
+#     "failed", and stays down without looping straight back into another
+#     429 - restart it by hand (`systemctl start btc-parser-api-poll`)
+#     once the rate limit has cooled off, or adjust
+#     mempool_api.rate_limit/interval_seconds in config.yaml first.
+#   - Weekly OS reboot -> this is an *initial* start of an enabled unit at
+#     boot, not a failure-triggered restart, so it comes back up
+#     regardless of how/why it last stopped.
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=75
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+[Install]
+WantedBy=btc-parser.target

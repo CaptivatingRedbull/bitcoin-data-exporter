@@ -24,6 +24,14 @@ from btc_parser_app.config import EndpointConfig, MempoolApiConfig
 
 logger = logging.getLogger(__name__)
 
+# Distinct from a generic crash (an unhandled exception also exits with 1,
+# Python's default) so a systemd unit can tell them apart via
+# RestartPreventExitStatus - restart on a real crash, but never on a
+# deliberate 429 stop (see systemd/btc-parser-api-poll.service.template and
+# docs/09-logging-fehlerbehandlung-einschraenkungen.md).  75 = EX_TEMPFAIL
+# from sysexits.h: "temporary failure, user is invited to retry".
+EXIT_RATE_LIMITED = 75
+
 
 def compute_start_offsets(endpoints: tuple[EndpointConfig, ...]) -> dict[str, float]:
     """Endpoints sharing the same interval get their request *starts* spread
@@ -130,13 +138,13 @@ def run_poller(
 ) -> int:
     """Start one thread per endpoint and block until stop_event is set (by a
     429, or by the caller). Returns a process exit code: 0 for a clean
-    caller-requested stop, 1 if a 429 halted the poller.
+    caller-requested stop, EXIT_RATE_LIMITED if a 429 halted the poller.
 
     stop_event may be caller-owned (an externally constructed Event the
     caller sets for its own shutdown reasons) or the internal default. Either
     way, a separate internal rate_limited_event tracks whether a 429 was the
     actual reason the loop stopped, so a caller-triggered stop is never
-    misreported as "rate limited" with exit code 1.
+    misreported as "rate limited" with EXIT_RATE_LIMITED.
     """
     stop_event = stop_event or threading.Event()
     rate_limited_event = threading.Event()
@@ -219,7 +227,7 @@ def run_poller(
 
     if rate_limited_event.is_set():
         logger.warning("Stopped: received HTTP 429 (rate limited) from mempool.space.")
-        return 1
+        return EXIT_RATE_LIMITED
 
     logger.info("Stopped: stop_event was set externally.")
     return 0
