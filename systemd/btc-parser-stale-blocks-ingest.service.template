@@ -1,0 +1,29 @@
+# Installed by systemd/install.sh as /etc/systemd/system/btc-parser-stale-blocks-ingest.service
+# (APP_DIR and APP_USER filled in by that script). Do not edit the installed copy by
+# hand - re-run install.sh instead, it's idempotent.
+[Unit]
+Description=btc_parser_app - stale/orphaned chain-tip pipeline (stale-blocks-ingest)
+Documentation=file://{{APP_DIR}}/docs/05-stale-blocks-pipeline.md
+PartOf=btc-parser.target
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{APP_USER}}
+WorkingDirectory={{APP_DIR}}
+EnvironmentFile=-{{APP_DIR}}/systemd/env
+ExecStart=/bin/sh -c '"{{APP_DIR}}/.venv/bin/python" "{{APP_DIR}}/run.py" ${BTC_PARSER_CONFIG:+--config "$BTC_PARSER_CONFIG"} stale-blocks-ingest'
+
+# No distinct exit code for "don't retry this" - any nonzero exit is
+# treated as a transient/environmental failure worth retrying after a
+# cooldown.
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+[Install]
+WantedBy=btc-parser.target

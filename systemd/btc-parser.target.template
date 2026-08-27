@@ -1,0 +1,15 @@
+# Installed by systemd/install.sh as /etc/systemd/system/btc-parser.target.
+# Convenience grouping unit - lets you start/stop/check all three
+# long-running components together:
+#   systemctl start btc-parser.target      # starts all three
+#   systemctl stop btc-parser.target       # stops all three
+#   systemctl status btc-parser.target
+# Each service also has PartOf=btc-parser.target, so stopping the target
+# stops them too (PartOf alone doesn't imply starting them - that's what
+# each service's WantedBy=btc-parser.target + this target being enabled and
+# started does).
+[Unit]
+Description=btc_parser_app - all long-running components (rpc-ingest, stale-blocks-ingest, api-poll)
+
+[Install]
+WantedBy=multi-user.target

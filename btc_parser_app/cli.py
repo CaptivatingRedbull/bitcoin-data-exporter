@@ -18,7 +18,9 @@ Commands:
                             SIGTERM/SIGINT.
     api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM),
                             including the minutely "prices" endpoint that writes
-                            mempool_api.output_dir/prices.csv.
+                            mempool_api.output_dir/prices.csv. Exit code 75 (not 1) on a 429 stop -
+                            see btc_parser_app/api/poller.py::EXIT_RATE_LIMITED - so a systemd unit
+                            can restart on a real crash without restart-looping on a 429.
     update-pools-dataset    Force-refresh config/pools-v2.json from GitHub
     import-price-history    One-time (idempotent) bulk import of pricing.xbtusd_csv_path/
                             pricing.xbteur_csv_path (Kraken 1-minute OHLC exports) into
