@@ -40,6 +40,11 @@ Stand zum Zeitpunkt ihrer Erstellung.
 9. [Logging, Fehlerbehandlung und bekannte Einschränkungen](09-logging-fehlerbehandlung-einschraenkungen.md)
    Wie Logging konfiguriert ist, die grundsätzliche Fehlerbehandlungs-
    Philosophie der Anwendung, und eine Liste bewusster Design-Grenzen.
+10. [Splunk-Integration und Feldkonzept](10-splunk-integration-und-feldkonzept.md)
+    Die konkrete `inputs.conf`/`props.conf`-Konfiguration unter
+    [`splunk/`](../splunk/): Test (Splunk Cloud) vs. Produktiv (Splunk
+    Enterprise), Sourcetype-/Zeitfeld-Zuordnung, und welche Felder/
+    Verzeichnisse indiziert werden bzw. bewusst nicht, und warum.
 
 ## Kurzeinstieg
 

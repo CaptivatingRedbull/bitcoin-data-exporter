@@ -5,7 +5,10 @@
 Dieses Kapitel fasst **alle** von der Anwendung erzeugten Dateien an
 einer Stelle zusammen und beschreibt, wie sie sicher in Splunk (oder ein
 vergleichbares System) eingelesen werden können. Für die genauen
-Spaltenschemata siehe die jeweiligen Kapitel (4, 5, 6).
+Spaltenschemata siehe die jeweiligen Kapitel (4, 5, 6). Für die
+tatsächliche `inputs.conf`/`props.conf`-Konfiguration und das
+feldbezogene Indizierungskonzept siehe
+[Kapitel 10](10-splunk-integration-und-feldkonzept.md).
 
 ## 7.1 Verzeichnisübersicht (Standard-`config.yaml`, relativ zu `full_app/`)
 

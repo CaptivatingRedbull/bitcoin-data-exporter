@@ -1,0 +1,28 @@
+# TA-btc-parser-inputs/local/outputs.conf.example
+#
+# NOT used as-is - rename to outputs.conf only for the Splunk ENTERPRISE
+# (prod) target, and only after filling in the real indexer addresses.
+#
+# For Splunk CLOUD (test), do not write this file by hand at all: download
+# the "Universal Forwarder credentials" package from the Cloud instance
+# (Settings > Data Inputs > Forwarders, or the Cloud Monitoring Console)
+# and install it as its own app on the UF. That package already contains
+# a correct outputs.conf plus the TLS certs the Cloud receiver requires -
+# hand-writing one for Cloud is unsupported and will not authenticate.
+#
+# See docs/10-splunk-integration-und-feldkonzept.md, section 6.
+
+[tcpout]
+defaultGroup = prod_indexers
+# forwardedindex.filter.disable = false   # leave index-time filtering on
+
+[tcpout:prod_indexers]
+# One line per indexer, or the indexer-discovery / load-balanced address
+# if the prod Enterprise deployment sits behind an indexer cluster.
+server = INDEXER1.EXAMPLE.INTERNAL:9997, INDEXER2.EXAMPLE.INTERNAL:9997
+
+# If the indexer tier requires TLS on the forwarding port, uncomment and
+# point these at the actual cert material instead of Cloud's pre-baked
+# ones:
+# clientCert = /opt/splunkforwarder/etc/apps/TA-btc-parser-inputs/local/cert.pem
+# sslPassword = <in the app's local/outputs.conf, never committed to git>
