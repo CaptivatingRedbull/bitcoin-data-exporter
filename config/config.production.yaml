@@ -52,30 +52,10 @@ mempool_api:
     bucket_size: 10
 
   endpoints:
-    - name: fees_precise
-      path: /api/v1/fees/precise
-      parser: fees_precise
-      interval_seconds: 60
-
-    - name: mempool
-      path: /api/mempool
-      parser: mempool
-      interval_seconds: 60
-
     - name: prices
       path: /api/v1/prices
       parser: prices
       interval_seconds: 60
-
-    - name: difficulty_adjustment
-      path: /api/v1/difficulty-adjustment
-      parser: difficulty_adjustment
-      interval_seconds: 300
-
-    - name: mining_pools_24h
-      path: /api/v1/mining/pools/24h
-      parser: mining_pools_24h
-      interval_seconds: 86400
 
 # -----------------------------------------------------------------------
 # Mining-pool signature dataset

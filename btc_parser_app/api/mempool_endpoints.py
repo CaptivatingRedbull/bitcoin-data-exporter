@@ -1,9 +1,7 @@
-"""Row-shaping functions for each mempool.space endpoint.
+"""Row-shaping function for the mempool.space "prices" endpoint.
 
-Ported from the original mempool_api_parser.py. Each parser turns a decoded
-JSON response into a list of flat, scalar-field dict rows ready for polars -
-one endpoint -> one CSV. A parser returning multiple rows (mining pools)
-just means that CSV grows wider in row-count, not column-count.
+Ported from the original mempool_api_parser.py. A parser turns a decoded
+JSON response into a list of flat, scalar-field dict rows ready for polars.
 
 The registry at the bottom maps config.yaml's `endpoints[].parser` string to
 one of these functions - add a new endpoint by writing a `parse_<name>`
@@ -20,8 +18,9 @@ from typing import Any
 
 @dataclass(frozen=True)
 class PolledAt:
-    """Timestamp attached to every row so events line up across the separate
-    per-endpoint CSVs even though each endpoint is polled a few seconds apart.
+    """Timestamp handed to every parser so rows can be stamped with when
+    they were fetched, independent of any timestamp the payload itself
+    carries.
 
     Only the unix epoch value is exported to CSV (as_dict()) - Splunk indexes
     straight off an epoch value, so a second ISO-string column would just be
@@ -40,34 +39,6 @@ class PolledAt:
         return {"polled_at_unix": self.unix}
 
 
-def parse_fees_precise(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
-    return [
-        {
-            **polled_at.as_dict(),
-            "fastest_fee_sat_vb": data.get("fastestFee"),
-            "half_hour_fee_sat_vb": data.get("halfHourFee"),
-            "hour_fee_sat_vb": data.get("hourFee"),
-            "economy_fee_sat_vb": data.get("economyFee"),
-            "minimum_fee_sat_vb": data.get("minimumFee"),
-        }
-    ]
-
-
-def parse_mempool(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
-    # fee_histogram (a [feerate, cumulative_vsize] list with 200+ buckets) is
-    # deliberately dropped here - a JSON blob stuffed into a CSV cell isn't
-    # useful once it lands in Splunk, and count/vsize/fee already cover the
-    # scalar signal worth indexing.
-    return [
-        {
-            **polled_at.as_dict(),
-            "tx_count": data.get("count"),
-            "vsize_total": data.get("vsize"),
-            "total_fee_sats": data.get("total_fee"),
-        }
-    ]
-
-
 def parse_prices(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
     # Only USD/EUR - the other currencies mempool.space returns (GBP, CAD,
     # CHF, AUD, JPY) aren't used anywhere downstream. date_unix is the
@@ -84,58 +55,8 @@ def parse_prices(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
     ]
 
 
-def parse_difficulty_adjustment(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
-    return [
-        {
-            **polled_at.as_dict(),
-            "progress_percent": data.get("progressPercent"),
-            "difficulty_change_percent": data.get("difficultyChange"),
-            "estimated_retarget_date_unix_ms": data.get("estimatedRetargetDate"),
-            "remaining_blocks": data.get("remainingBlocks"),
-            "remaining_time_seconds": data.get("remainingTime"),
-            "previous_retarget_percent": data.get("previousRetarget"),
-            "previous_retarget_time_unix": data.get("previousTime"),
-            "next_retarget_height": data.get("nextRetargetHeight"),
-            "block_time_avg_seconds": data.get("timeAvg"),
-            "block_time_adjusted_avg_seconds": data.get("adjustedTimeAvg"),
-            "time_offset_seconds": data.get("timeOffset"),
-            "expected_blocks": data.get("expectedBlocks"),
-        }
-    ]
-
-
-def parse_mining_pools_24h(data: Any, polled_at: PolledAt) -> list[dict[str, Any]]:
-    pools = data.get("pools") or []
-    base = {
-        **polled_at.as_dict(),
-        "network_block_count_24h": data.get("blockCount"),
-        "hashrate_24h": data.get("lastEstimatedHashrate"),
-        "hashrate_3d": data.get("lastEstimatedHashrate3d"),
-        "hashrate_1w": data.get("lastEstimatedHashrate1w"),
-    }
-    return [
-        {
-            **base,
-            "pool_id": pool.get("poolId"),
-            "pool_name": pool.get("name"),
-            "pool_slug": pool.get("slug"),
-            "pool_rank": pool.get("rank"),
-            "pool_block_count_24h": pool.get("blockCount"),
-            "pool_empty_blocks_24h": pool.get("emptyBlocks"),
-            "pool_avg_match_rate": pool.get("avgMatchRate"),
-            "pool_avg_fee_delta": pool.get("avgFeeDelta"),
-            "pool_link": pool.get("link"),
-        }
-        for pool in pools
-    ]
-
-
 ParserFn = Callable[[Any, PolledAt], list[dict[str, Any]]]
 
 PARSER_REGISTRY: dict[str, ParserFn] = {
-    "fees_precise": parse_fees_precise,
-    "mempool": parse_mempool,
     "prices": parse_prices,
-    "difficulty_adjustment": parse_difficulty_adjustment,
-    "mining_pools_24h": parse_mining_pools_24h,
 }

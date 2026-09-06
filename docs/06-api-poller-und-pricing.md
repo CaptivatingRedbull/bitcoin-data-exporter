@@ -8,17 +8,17 @@ Kommando: `api-poll` · Einstiegspunkt: `btc_parser_app/api/poller.py::run_polle
 
 | Modul | Aufgabe |
 |---|---|
-| `api/poller.py` | Ein Thread pro Endpunkt, jeder auf eigenem Intervall. |
+| `api/poller.py` | Ein Thread pro konfiguriertem Endpunkt, jeder auf eigenem Intervall. |
 | `api/rate_limiter.py` | Thread-sicherer Token-Bucket, der `mempool_api.rate_limit` durchsetzt. |
 | `api/client.py` | Ratenbegrenzter HTTP-GET-Client (Retries, 429-Handling), von jedem mempool.space-Aufrufer geteilt. |
-| `api/mempool_endpoints.py` | JSON-zu-Zeilen-Parser je Endpunkt + Registry. |
+| `api/mempool_endpoints.py` | JSON-zu-Zeilen-Parser für den `prices`-Endpunkt + Registry. |
 | `api/price_history_import.py` | Einmaliger, rein lokaler Bulk-Import zweier Kraken-1-Minuten-OHLC-CSVs in `prices.csv` (`import-price-history`). |
 | `api/mining_pools_dataset.py` | Siehe Kapitel 4 – nutzt denselben `ApiClient`, aber eine eigene, unabhängige Rate-Limit-Instanz (siehe 6.7). |
 
-Es gibt in dieser Version **keinen** eigenen Preis-Lückenfüller-Thread
-mehr innerhalb von `api-poll` – `run_poller()` startet ausschließlich die
-Endpunkt-Threads. Historische Preisdaten kommen ausschließlich über das
-separate, netzwerklose Kommando `import-price-history` (siehe 6.6).
+`mempool_api.endpoints` enthält derzeit genau einen Eintrag: `prices`
+(siehe 6.3). `run_poller()` selbst ist unverändert generisch – ein neuer
+Endpunkt lässt sich weiterhin allein über `config.yaml` plus eine neue
+`parse_<name>`-Funktion hinzufügen, ohne `poller.py` anzufassen.
 
 ## 6.2 Token-Bucket-Rate-Limiting
 
@@ -33,6 +33,10 @@ verfügbar ist, und gibt `False` zurück, falls währenddessen ein Stopp
 angefordert wurde – ein Aufrufer kann eine nicht mehr gewünschte Anfrage
 so abbrechen, statt sie doch noch abzusetzen.
 
+Das konfigurierte Budget ist 10 Anfragen/Minute (Burst 10): 1 davon wird
+vom live `prices`-Poll (60s-Intervall) gezogen, die übrigen 9 sind für
+historisches Preis-Backfill reserviert.
+
 ## 6.3 Endpunkt-Threads (`poller.py`)
 
 `run_poller()` startet für jeden in `mempool_api.endpoints` konfigurierten
@@ -40,8 +44,8 @@ Eintrag einen eigenen Thread (`endpoint_loop()`), der:
 
 1. Um einen berechneten Start-Offset verzögert beginnt
    (`compute_start_offsets()`): Endpunkte mit demselben Intervall werden
-   gleichmäßig über dieses Intervall gestaffelt (z. B. 4 Endpunkte auf
-   60 s starten 15 s versetzt), statt gleichzeitig zu feuern.
+   gleichmäßig über dieses Intervall gestaffelt, statt gleichzeitig zu
+   feuern.
 2. In einer Schleife `fetch_and_write()` aufruft, dann bis zum nächsten
    fälligen Zeitpunkt wartet. Fällt ein Thread hinter den Zeitplan zurück
    (langsame Antwort), wird der Zeitplan neu synchronisiert statt eine
@@ -60,50 +64,13 @@ beendet den Poller nicht.
 
 ### Konfigurierte Endpunkte (Standard `config.yaml`)
 
-| Name | Pfad | Intervall | Begründung des Intervalls |
-|---|---|---|---|
-| `fees_precise` | `/api/v1/fees/precise` | 60 s | – |
-| `mempool` | `/api/mempool` | 60 s | – |
-| `prices` | `/api/v1/prices` | 60 s | Schreibt in dieselbe `prices.csv` wie der historische Import, siehe 6.6. |
-| `difficulty_adjustment` | `/api/v1/difficulty-adjustment` | 300 s | Werte ändern sich nur ca. alle 10 Minuten (ein Block) – 60 s-Polling würde nur ~10 identische Zeilen pro Block ohne Mehrwert erzeugen. |
-| `mining_pools_24h` | `/api/v1/mining/pools/24h` | 86400 s | Ein rollierendes 24h-Fenster bewegt sich zwischen Polls kaum. |
+| Name | Pfad | Intervall |
+|---|---|---|
+| `prices` | `/api/v1/prices` | 60 s |
 
-## 6.4 Ausgabeschema je Endpunkt
+## 6.4 Ausgabeschema
 
-Jede Endpunkt-Zeile außer `prices.csv` (siehe unten) trägt ein
-`polled_at_unix`-Feld (Unix-Epoch, UTC) – nur der Epoch-Wert wird
-exportiert, da Splunk direkt darauf indiziert; ein zusätzliches
-ISO-String-Feld wäre redundant.
-
-**`fees_precise.csv`**
-
-| Feld | Quelle |
-|---|---|
-| `polled_at_unix` | – |
-| `fastest_fee_sat_vb` | `fastestFee` |
-| `half_hour_fee_sat_vb` | `halfHourFee` |
-| `hour_fee_sat_vb` | `hourFee` |
-| `economy_fee_sat_vb` | `economyFee` |
-| `minimum_fee_sat_vb` | `minimumFee` |
-
-**`mempool.csv`**
-
-| Feld | Quelle |
-|---|---|
-| `polled_at_unix` | – |
-| `tx_count` | `count` |
-| `vsize_total` | `vsize` |
-| `total_fee_sats` | `total_fee` |
-
-Das von mempool.space zurückgegebene `fee_histogram` (200+
-`[feerate, cumulative_vsize]`-Buckets) wird bewusst **nicht** exportiert –
-ein JSON-Blob in einer einzelnen CSV-Zelle bringt in Splunk keinen
-Mehrwert; `tx_count`/`vsize_total`/`total_fee_sats` decken das relevante
-skalare Signal ab.
-
-**`prices.csv`** – Sonderfall gegenüber jeder anderen Endpunkt-CSV: Kein
-`polled_at_unix`, dafür `date_unix` als der Preis eigene Zeitstempel
-(nicht der Abrufzeitpunkt), und nur zwei Währungen:
+**`prices.csv`**
 
 | Feld | Quelle |
 |---|---|
@@ -117,37 +84,6 @@ nachgelagert verwendet werden. Diese Zeilenform (`date_unix,usd,eur`) ist
 bewusst identisch zu der, die `import-price-history` aus den
 Kraken-Exporten erzeugt (siehe 6.6) – beide Schreiber befüllen dieselbe
 Datei, `mempool_api.output_dir/prices.csv`, ohne separate Tagestabelle.
-
-**`difficulty_adjustment.csv`**
-
-| Feld | Quelle |
-|---|---|
-| `polled_at_unix` | – |
-| `progress_percent` | `progressPercent` |
-| `difficulty_change_percent` | `difficultyChange` |
-| `estimated_retarget_date_unix_ms` | `estimatedRetargetDate` |
-| `remaining_blocks` | `remainingBlocks` |
-| `remaining_time_seconds` | `remainingTime` |
-| `previous_retarget_percent` | `previousRetarget` |
-| `previous_retarget_time_unix` | `previousTime` |
-| `next_retarget_height` | `nextRetargetHeight` |
-| `block_time_avg_seconds` | `timeAvg` |
-| `block_time_adjusted_avg_seconds` | `adjustedTimeAvg` |
-| `time_offset_seconds` | `timeOffset` |
-| `expected_blocks` | `expectedBlocks` |
-
-**`mining_pools_24h.csv`** – eine Zeile **pro Pool** pro Poll (nicht eine
-Zeile pro Poll insgesamt):
-
-| Feld | Quelle |
-|---|---|
-| `polled_at_unix` | – |
-| `network_block_count_24h` | `blockCount` (block-weit, auf jede Pool-Zeile dupliziert) |
-| `hashrate_24h`, `hashrate_3d`, `hashrate_1w` | `lastEstimatedHashrate`, `lastEstimatedHashrate3d`, `lastEstimatedHashrate1w` (netzwerkweit, dupliziert) |
-| `pool_id`, `pool_name`, `pool_slug`, `pool_rank` | `poolId`, `name`, `slug`, `rank` |
-| `pool_block_count_24h`, `pool_empty_blocks_24h` | `blockCount`, `emptyBlocks` (pro Pool) |
-| `pool_avg_match_rate`, `pool_avg_fee_delta` | `avgMatchRate`, `avgFeeDelta` |
-| `pool_link` | `link` |
 
 ## 6.5 429-Verhalten
 
@@ -184,11 +120,6 @@ dieselbe `date_unix,usd,eur`-Zeilenform:
   `unix_timestamp,open,high,low,close,volume,trades` – jeweils die
   "_1"-Intervall-Datei verwenden), auf Minutenzeitstempel gejoint,
   ausschließlich mit dem Schlusskurs.
-
-Es gibt **keine** separate Tagestabelle und **keinen** automatischen
-Lückenfüller-Thread mehr, der gegen mempool.spaces `historical-price`-
-Endpunkt läuft – historische Tiefe kommt ausschließlich aus den beiden
-lokalen Kraken-Dateien.
 
 ### `import-price-history` im Detail
 
@@ -239,9 +170,7 @@ Sicherheitsversprechen gebrochen.
    übernimmt ab dem Moment des ersten erfolgreichen Polls nahtlos weiter,
    Minute für Minute.
 4. Nach jeder Downtime bleibt lediglich eine Lücke in `prices.csv` für den
-   Ausfallzeitraum – anders als zuvor gibt es dafür in dieser Version
-   **keine** automatische Nachfüllung; siehe Kapitel 9 für die
-   Einordnung.
+   Ausfallzeitraum – siehe Kapitel 9 für die Einordnung.
 
 ## 6.7 Mining-Pool-Signaturdatenset
 

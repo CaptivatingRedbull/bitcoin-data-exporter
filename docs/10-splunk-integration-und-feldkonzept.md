@@ -89,11 +89,7 @@ Zeitstempel-Zuordnung gegenseitig stören.
 | `inputs*.csv` | `btc:inputs` | `block_time` | `%s` |
 | `outputs*.csv` | `btc:outputs` | `block_time` | `%s` |
 | `stale_block_headers*.csv` | `btc:stale_block_headers` | `observed_at` (ISO-8601 UTC) | `%Y-%m-%dT%H:%M:%SZ` |
-| `fees_precise*.csv` | `btc:fees_precise` | `polled_at_unix` | `%s` |
-| `mempool*.csv` | `btc:mempool` | `polled_at_unix` | `%s` |
 | `prices*.csv` | `btc:prices` | `date_unix` (Preis-eigener Zeitstempel, **nicht** Poll-Zeitpunkt) | `%s` |
-| `difficulty_adjustment*.csv` | `btc:difficulty_adjustment` | `polled_at_unix` | `%s` |
-| `mining_pools_24h*.csv` | `btc:mining_pools_24h` | `polled_at_unix` | `%s` |
 
 Alle Zeitstempel sind UTC (Kapitel 7.5) – jede Stanza setzt deshalb
 zusätzlich explizit `TZ = UTC`, statt sich auf die Host-Zeitzone des

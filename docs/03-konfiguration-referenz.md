@@ -51,19 +51,19 @@ Der mempool.space-HTTP-Poller (`api-poll`).
 Jeder Eintrag in `endpoints` hat die Form:
 
 ```yaml
-- name: fees_precise          # bestimmt den Dateinamen <name>.csv
-  path: /api/v1/fees/precise  # an base_url angehängt
-  parser: fees_precise        # Name der parse_<name>-Funktion
+- name: prices               # bestimmt den Dateinamen <name>.csv
+  path: /api/v1/prices       # an base_url angehängt
+  parser: prices              # Name der parse_<name>-Funktion
   interval_seconds: 60        # Poll-Intervall dieses Endpunkts
 ```
 
 `rate_limit.requests_per_minute` / `rate_limit.bucket_size` definieren
 **einen einzigen gemeinsamen Token-Bucket**, aus dem sich jede
 `endpoints`-Anfrage bedient – eine Erhöhung dieser Werte erhöht also die
-effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Da
-mempool.space seine öffentlichen API-Limits nicht dokumentiert, ist der
-Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10) bewusst
-konservativ gewählt. Der einmalige Preis-Historie-Import
+effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Der
+Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10): 1 davon
+wird vom live `prices`-Poll oben gezogen, die übrigen 9 sind für
+historisches Preis-Backfill reserviert. Der einmalige Preis-Historie-Import
 (`import-price-history`, siehe `pricing` unten) macht **keine**
 Netzwerkanfragen und berührt dieses Budget nicht.
 
