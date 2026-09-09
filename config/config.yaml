@@ -45,7 +45,9 @@ mempool_api:
   # Shared token-bucket budget covering every request this app makes
   # against mempool.space. requests_per_minute is the steady-state refill
   # rate; bucket_size is the burst allowance (how many requests can fire
-  # back-to-back before the rate limit kicks in).
+  # back-to-back before the rate limit kicks in). 10 req/min: 1 is drawn by
+  # the live `prices` poll below (60s interval), the remaining 9 is
+  # reserved for historical price backfill.
   rate_limit:
     requests_per_minute: 10
     bucket_size: 10
@@ -54,37 +56,10 @@ mempool_api:
   # function in btc_parser_app.api.mempool_endpoints - add a new endpoint by
   # writing a `parse_<name>` function there and an entry here.
   endpoints:
-    - name: fees_precise
-      path: /api/v1/fees/precise
-      parser: fees_precise
-      interval_seconds: 60
-
-    - name: mempool
-      path: /api/mempool
-      parser: mempool
-      interval_seconds: 60
-
     - name: prices
       path: /api/v1/prices
       parser: prices
       interval_seconds: 60
-
-    # Covers retarget ETA/progress. The underlying values only change once
-    # per block (~10 min average), so polling every 60s just writes ~10
-    # identical rows per block for no benefit - 300s still catches every
-    # block's change with a couple minutes of slack, at a fifth of the
-    # request/row volume.
-    - name: difficulty_adjustment
-      path: /api/v1/difficulty-adjustment
-      parser: difficulty_adjustment
-      interval_seconds: 300
-
-    # A rolling 24h window barely moves between polls, so it gets its own
-    # slow interval instead of burning a request every minute.
-    - name: mining_pools_24h
-      path: /api/v1/mining/pools/24h
-      parser: mining_pools_24h
-      interval_seconds: 86400
 
 # -----------------------------------------------------------------------
 # Mining-pool signature dataset used by the RPC-side mining pool extractor

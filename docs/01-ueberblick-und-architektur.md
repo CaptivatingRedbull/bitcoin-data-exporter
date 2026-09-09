@@ -35,7 +35,7 @@ Bitcoin-Nodes hat keinen Einfluss auf die Preis-Pipeline.
 |---|---|---|---|
 | RPC-Parser | `rpc-ingest` | `btc_parser_app/rpc/ingest.py` | Holt Blöcke vom eigenen Node, flacht sie inkl. aller Transaktionen zu CSV-Zeilen ab, ordnet jeden Block anhand blockeigener Daten einem Mining-Pool zu (keine zusätzlichen Netzwerkaufrufe nötig). Reorg-sicher. |
 | Stale-Blocks-Pipeline | `stale-blocks-ingest` | `btc_parser_app/rpc/stale_blocks.py` | Separate Datenquelle für nicht-aktive Chain-Tips (`getchaintips` + das GitHub-Datenset `bitcoin-data/stale-blocks`). Unabhängig von `rpc-ingest`s eigenem Reorg-Handling. |
-| API-Poller | `api-poll` | `btc_parser_app/api/poller.py` | Fragt die mempool.space-Endpunkte in konfigurierbaren Intervallen ab, innerhalb eines gemeinsamen Rate-Limit-Budgets (Token-Bucket) – darunter der minütliche `prices`-Endpunkt, der in dieselbe `prices.csv` schreibt, die auch der einmalige Preis-Historie-Import befüllt (siehe Kapitel 6). |
+| API-Poller | `api-poll` | `btc_parser_app/api/poller.py` | Pollt den mempool.space `prices`-Endpunkt minütlich, innerhalb eines Rate-Limit-Budgets (Token-Bucket), und schreibt in dieselbe `prices.csv`, die auch der einmalige Preis-Historie-Import befüllt (siehe Kapitel 6). |
 
 Jeder Prozess läuft bis `SIGTERM`/`SIGINT` (bzw. bis `api-poll` einen
 HTTP-429 erhält – dann hält der Prozess bewusst an und muss manuell neu
@@ -95,12 +95,11 @@ austauschen, ohne Code zu verändern (siehe Kapitel 3).
                                │ HTTP GET (Token-Bucket-limitiert)
                     ┌──────────▼─────────────┐
                     │       api-poll          │
-                    │   (5 Endpunkt-Threads,  │
-                    │  einer davon "prices")  │
+                    │  (Endpunkt-Thread       │
+                    │      "prices")          │
                     └──────────┬─────────────┘
                                │
-        fees_precise.csv, mempool.csv, prices.csv (date_unix,usd,eur;
-        60s-Takt), difficulty_adjustment.csv, mining_pools_24h.csv
+              prices.csv (date_unix,usd,eur; 60s-Takt)
 
      ┌────────────────────────────┐
      │ 2× Kraken-1-Minuten-Export  │

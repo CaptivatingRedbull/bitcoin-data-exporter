@@ -55,11 +55,7 @@ full_app/
         outputs/
           outputs.000001.csv, ...
       api/                       mempool_api.output_dir - für Splunk `monitor`
-        fees_precise.csv
-        mempool.csv
         prices.csv                (Live-Poll UND Kraken-Import, siehe Kap. 6)
-        difficulty_adjustment.csv
-        mining_pools_24h.csv
       stale/                     stale_blocks.output_dir - für Splunk `monitor`
         stale_block_headers.csv (+ .000002.csv, ...)
   config/
@@ -91,11 +87,7 @@ Redirects von `start.sh`) bleiben davon unberührt, da dieser Pfad in
 | `blocks_part_seq.csv` / `transactions_part_seq.csv` / `inputs_part_seq.csv` / `outputs_part_seq.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.6 |
 | `stale_block_headers.csv` | `stale_blocks.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 5.6 |
 | `registry.csv` | `stale_blocks.state_dir` | veränderlich, überschrieben | **Nein** | Kapitel 5.7 |
-| `fees_precise.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 6.4 |
-| `mempool.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 6.4 |
 | `prices.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`, **nie löschen**) | Kapitel 6.4, 6.6 |
-| `difficulty_adjustment.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 6.4 |
-| `mining_pools_24h.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 6.4 |
 | `pools-v2.json` | `mining_pools_dataset.local_path` | ganze Datei überschrieben | Nein (Konfigurationsdaten) | Kapitel 4.8 |
 | `<kommando>.log` | `logging.log_dir` | rotierend (20 MB × 5) | Nein (Betriebslog) | Kapitel 9 |
 | `<kommando>.out` | `full_app/logs/` (hart codiert) | rohes stdout/stderr | Nein (Betriebslog) | Kapitel 2 |

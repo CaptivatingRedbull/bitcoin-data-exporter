@@ -17,8 +17,8 @@ touches block parsing, and a node hiccup never touches pricing:
 - **Stale/orphaned chain-tip pipeline** (`stale-blocks-ingest`) - a separate
   sourcetype from `rpc-ingest`'s main-chain output, tracking non-active
   chain tips (see its own section below).
-- **API fetcher** (`api-poll`) - polls the mempool.space HTTP API on a
-  budget so it never trips a 429, including a minutely BTC/USD+EUR price
+- **API fetcher** (`api-poll`) - polls mempool.space's price endpoint on a
+  budget so it never trips a 429, writing a minutely BTC/USD+EUR price
   snapshot (see **Pricing** below).
 
 Everything that's a tunable - endpoints, polling cadence, the rate-limit
@@ -156,9 +156,8 @@ python run.py rpc-ingest
 # main-chain output. Runs forever until SIGTERM/SIGINT.
 python run.py stale-blocks-ingest
 
-# Long-running poller for the mempool.space endpoints (fees, mempool
-# state, prices, difficulty adjustment, 24h pool hashrate share). Runs
-# until Ctrl-C/SIGTERM or a 429.
+# Long-running poller for mempool.space's price endpoint, appending a
+# minutely BTC/USD+EUR row to prices.csv. Runs until Ctrl-C/SIGTERM or a 429.
 python run.py api-poll
 
 # Refresh config/pools-v2.json from GitHub (normally automatic - see below)
@@ -186,8 +185,8 @@ The mempool.space HTTP poller. `rate_limit.requests_per_minute` /
 `rate_limit.bucket_size` define a single shared token bucket that every
 `endpoints` request draws from, so raising either value raises the
 effective rate for the whole poller against that host, not per-endpoint.
-mempool.space's public API limits are intentionally undisclosed, so the
-default (10 req/min, burst of 10) is deliberately conservative.
+The default (10 req/min, burst of 10) is split 1 req/min for the live
+`prices` poll and 9 req/min reserved for historical price backfill.
 
 `endpoints` is a list of `{name, path, parser, interval_seconds}`. Each
 `parser` name must match a `parse_<name>` function registered in
@@ -433,11 +432,6 @@ failing ingestion.
   (every non-witness transaction) instead of repeating the 64-char hash -
   reconstruct the real value downstream with `coalesce(wtxid, txid)`. Only
   witness transactions, where the two genuinely differ, pay for the column.
-- `mempool.csv` (the `mempool` API endpoint) intentionally does not include
-  the raw `fee_histogram` mempool.space returns - a JSON blob stuffed into
-  a single CSV cell isn't useful once it lands in Splunk. `tx_count`,
-  `vsize_total`, and `total_fee_sats` cover the scalar signal worth
-  indexing.
 
 ## RPC Parser Reorg Handling
 
