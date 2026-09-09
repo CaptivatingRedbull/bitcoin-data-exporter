@@ -61,11 +61,11 @@ Jeder Eintrag in `endpoints` hat die Form:
 **einen einzigen gemeinsamen Token-Bucket**, aus dem sich jede
 `endpoints`-Anfrage bedient – eine Erhöhung dieser Werte erhöht also die
 effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Der
-Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10): 1 davon
-wird vom live `prices`-Poll oben gezogen, die übrigen 9 sind für
-historisches Preis-Backfill reserviert. Der einmalige Preis-Historie-Import
-(`import-price-history`, siehe `pricing` unten) macht **keine**
-Netzwerkanfragen und berührt dieses Budget nicht.
+Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10) wird
+derzeit nur vom live `prices`-Poll oben gezogen (~1 Anfrage/Minute).
+`backfill_price_gap.py` (siehe 6.6) ist ein eigenständiges Skript mit
+eigenem `--rate-limit-per-minute` und bedient sich **nicht** aus diesem
+Budget.
 
 `parser` muss auf eine `parse_<name>`-Funktion in
 `btc_parser_app/api/mempool_endpoints.py` verweisen – ein neuer
@@ -78,9 +78,9 @@ kontinuierlich wachsende/rotierende Datei – es gibt keinen Zeitpunkt, an
 dem eine dieser Dateien für einen `batch`-Splunk-Input "vollständig" wäre.
 `output_dir` sollte deshalb immer mit einem `monitor`-Input (nicht-
 destruktives Tailing) angebunden werden, nie mit `batch` (siehe Kapitel 7).
-Für `prices.csv` gilt das zusätzlich zwingend: `import-price-history` liest
-diese Datei vollständig zurück, um bereits importierte Minuten zu erkennen
-(siehe `pricing` unten) – sie darf also nie durch ein destruktives
+Für `prices.csv` gilt das zusätzlich zwingend: `backfill_price_gap.py`
+liest diese Datei vollständig zurück, um bereits vorhandene Minuten zu
+erkennen (siehe Kapitel 6.6) – sie darf also nie durch ein destruktives
 Splunk-Input-Verhalten unter der Anwendung weggelöscht werden.
 
 Anfragen werden ohne eigenen `User-Agent`-Header gesendet (nur der
@@ -105,26 +105,23 @@ unter `config/pools-v2.json` stammt von
 (MIT-lizenziert), sodass `rpc-ingest` offline funktioniert. Details zur
 Verwendung in Kapitel 4.
 
-## 3.4 `pricing`
+## 3.4 Preis-Historie (kein config.yaml-Abschnitt)
 
-Konfiguriert ausschließlich den einmaligen, rein lokalen Bulk-Import von
-historischen Minutenpreisen (Kommando `import-price-history`) in
-**dieselbe** `mempool_api.output_dir/prices.csv`, in die auch der live
-gepollte `prices`-Endpunkt schreibt – es gibt keine separate Tagestabelle
-und kein eigenes `output_dir` für Pricing.
+Es gibt in dieser Version **keinen** `pricing`-Abschnitt in `config.yaml`
+mehr. Historische Minutenpreise kommen aus zwei Quellen außerhalb der
+config.yaml-gesteuerten Kommandos:
 
-| Schlüssel | Typ | Default | Beschreibung |
-|---|---|---|---|
-| `xbtusd_csv_path` | Pfad | – (Pflicht) | Pfad zum Kraken-XBTUSD-1-Minuten-OHLC-Export, standardmäßig `config/XBTUSD_1.csv` (Datei selbst wird nicht mitgeliefert). |
-| `xbteur_csv_path` | Pfad | – (Pflicht) | Pfad zum Kraken-XBTEUR-1-Minuten-OHLC-Export, standardmäßig `config/XBTEUR_1.csv` (Datei selbst wird nicht mitgeliefert). |
+- ein einmaliger, extern durchgeführter Kraken-CSV-Import für den
+  Großteil der Historie (kein eigenes Tool mehr in dieser App), und
+- `backfill_price_gap.py` (eigenständiges Skript, eigene Kommandozeilen-
+  parameter: `--start-timestamp`, `--end-timestamp`, `--export-dir`,
+  `--rate-limit-per-minute`) für die verbleibende Lücke bis zum ersten
+  live gepollten `prices`-Wert.
 
-Beide Kraken-Exporte werden auf Minutenzeitstempel gejoint und in
-derselben `date_unix,usd,eur`-Zeilenform geschrieben, die auch der Live-
-Poller verwendet (siehe Kapitel 6). Es gibt in dieser Version **keine**
-automatische Lückenfüllung mehr über die mempool.space-API und keinen
-`backfill`-Unterabschnitt – Tiefe (historische Minuten) kommt
-ausschließlich aus diesen beiden lokalen CSV-Dateien, die Gegenwart
-ausschließlich vom live gepollten `prices`-Endpunkt. Details in Kapitel 6.
+Beide schreiben in dieselbe `date_unix,usd,eur`-Zeilenform in
+`mempool_api.output_dir/prices.csv` wie der Live-Poller – es gibt keine
+separate Tagestabelle und kein eigenes `output_dir` für Pricing. Details
+in Kapitel 6.6.
 
 ## 3.5 `rpc`
 

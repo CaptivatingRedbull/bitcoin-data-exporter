@@ -87,23 +87,25 @@ Welcher rotierte CSV-Part gelöscht werden darf, entscheidet ausschließlich
 die Splunk-Input-Konfiguration oder ein eigenes, verifiziertes
 Cleanup-Skript, nie die Anwendung selbst.
 
-### `import-price-history` benötigt zwei manuell besorgte Dateien
+### Der historische Kraken-Import ist kein Teil dieser App mehr
 
-Es gibt keinen automatisierten Download der Kraken-Exports – beide CSVs
-(XBTUSD, XBTEUR) müssen von Hand von Kraken heruntergeladen und unter
-`pricing.xbtusd_csv_path`/`pricing.xbteur_csv_path` abgelegt werden.
+Es gibt keinen automatisierten Download der Kraken-Exports und kein
+eigenes Import-Tool dafür mehr – dieser Teil der Historie wird extern
+(von Hand) direkt in `prices.csv` eingespielt, bevor `api-poll` oder
+`backfill_price_gap.py` laufen.
 
 ### Keine automatische Lückenfüllung in `prices.csv` nach Downtime
 
-Anders als in einer früheren Version dieser Anwendung gibt es aktuell
-**keinen** Hintergrund-Mechanismus, der eine durch Absturz/Neustart/
-Wartungsfenster entstandene Lücke in `prices.csv` automatisch nachfüllt –
-der live `prices`-Endpunkt schreibt einfach ab dem nächsten erfolgreichen
-Poll weiter, die dazwischenliegenden Minuten bleiben ohne manuelles
-Eingreifen leer. Eine entstandene Lücke lässt sich nachträglich nur über
-einen aktualisierten Kraken-Export und einen erneuten
-`import-price-history`-Lauf schließen, falls Kraken die betroffenen
-Minuten noch führt.
+Es gibt **keinen** Hintergrund-Mechanismus, der eine durch Absturz/
+Neustart/Wartungsfenster entstandene Lücke in `prices.csv` automatisch
+nachfüllt – der live `prices`-Endpunkt schreibt einfach ab dem nächsten
+erfolgreichen Poll weiter, die dazwischenliegenden Minuten bleiben ohne
+manuelles Eingreifen leer. Eine entstandene Lücke lässt sich nachträglich
+manuell über `backfill_price_gap.py` schließen (siehe Kapitel 6.6),
+solange mempool.space für den betroffenen Zeitraum noch Preisdaten über
+`historical-price` liefert – die Granularität dieser Daten nimmt mit dem
+Alter ab, sodass eine sehr alte Lücke ggf. nicht minutengenau
+geschlossen werden kann.
 
 ### `rpc.max_reorg_depth` als Sicherheitsgrenze
 
@@ -139,9 +141,9 @@ Für harte Dauerbetriebs-Anforderungen sind systemd-Units mit
 2. `full_app/config/config.yaml` (oder eine Kopie davon) auf die eigene
    Umgebung anpassen (siehe Kapitel 3).
 3. Virtuelle Umgebung einrichten (Kapitel 2.2).
-4. Optional, aber empfohlen: beide Kraken-1-Minuten-CSVs (XBTUSD, XBTEUR)
-   besorgen und `python run.py import-price-history` einmalig ausführen
-   (Kapitel 6.6), vor oder nach dem ersten `api-poll`-Start.
+4. Optional, aber empfohlen: historische BTC/USD+EUR-Preise extern
+   besorgen und in `prices.csv` einspielen, `api-poll` starten, und die
+   verbleibende Lücke mit `backfill_price_gap.py` schließen (Kapitel 6.6).
 5. `./start.sh` ausführen.
 6. Logs unter `parser-data/logs/` (strukturiert) und `full_app/logs/`
    (roh, `.out`) beobachten, insbesondere während der initialen

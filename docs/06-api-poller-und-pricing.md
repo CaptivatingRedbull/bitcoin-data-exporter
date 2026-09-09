@@ -12,7 +12,7 @@ Kommando: `api-poll` · Einstiegspunkt: `btc_parser_app/api/poller.py::run_polle
 | `api/rate_limiter.py` | Thread-sicherer Token-Bucket, der `mempool_api.rate_limit` durchsetzt. |
 | `api/client.py` | Ratenbegrenzter HTTP-GET-Client (Retries, 429-Handling), von jedem mempool.space-Aufrufer geteilt. |
 | `api/mempool_endpoints.py` | JSON-zu-Zeilen-Parser für den `prices`-Endpunkt + Registry. |
-| `api/price_history_import.py` | Einmaliger, rein lokaler Bulk-Import zweier Kraken-1-Minuten-OHLC-CSVs in `prices.csv` (`import-price-history`). |
+| `api/price_gap_backfill.py` | Eigenständiges, manuell gestartetes Skript (`backfill_price_gap.py`), das die Lücke zwischen dem einmaligen Kraken-CSV-Import und dem ersten live gepollten (per Cribl weitergeleiteten) Minutenwert über `historical-price` auffüllt. Kein `run.py`-Subkommando, keine config.yaml-Anbindung. |
 | `api/mining_pools_dataset.py` | Siehe Kapitel 4 – nutzt denselben `ApiClient`, aber eine eigene, unabhängige Rate-Limit-Instanz (siehe 6.7). |
 
 `mempool_api.endpoints` enthält derzeit genau einen Eintrag: `prices`
@@ -33,9 +33,10 @@ verfügbar ist, und gibt `False` zurück, falls währenddessen ein Stopp
 angefordert wurde – ein Aufrufer kann eine nicht mehr gewünschte Anfrage
 so abbrechen, statt sie doch noch abzusetzen.
 
-Das konfigurierte Budget ist 10 Anfragen/Minute (Burst 10): 1 davon wird
-vom live `prices`-Poll (60s-Intervall) gezogen, die übrigen 9 sind für
-historisches Preis-Backfill reserviert.
+Das konfigurierte Budget ist 10 Anfragen/Minute (Burst 10), wird aber
+derzeit nur vom live `prices`-Poll gezogen (60s-Intervall, ~1 Anfrage/min).
+`backfill_price_gap.py` (siehe 6.6) ist ein eigenständiges Skript mit
+eigenem `--rate-limit-per-minute` und zieht **nicht** aus diesem Budget.
 
 ## 6.3 Endpunkt-Threads (`poller.py`)
 
@@ -81,9 +82,9 @@ beendet den Poller nicht.
 Die übrigen von mempool.space zurückgegebenen Währungen (`GBP`, `CAD`,
 `CHF`, `AUD`, `JPY`) werden nicht exportiert, da sie nirgends
 nachgelagert verwendet werden. Diese Zeilenform (`date_unix,usd,eur`) ist
-bewusst identisch zu der, die `import-price-history` aus den
-Kraken-Exporten erzeugt (siehe 6.6) – beide Schreiber befüllen dieselbe
-Datei, `mempool_api.output_dir/prices.csv`, ohne separate Tagestabelle.
+bewusst identisch zu der, die `backfill_price_gap.py` erzeugt (siehe 6.6)
+– beide Schreiber befüllen dieselbe Datei, `mempool_api.output_dir/prices.csv`,
+ohne separate Tagestabelle.
 
 ## 6.5 429-Verhalten
 
@@ -106,53 +107,76 @@ Poller nicht anhält, nur den betroffenen Zyklus überspringt).
 
 ## 6.6 Pricing-Pipeline
 
-BTC-Preise, durchgängig minütlich, alles in einer einzigen Datei:
-`mempool_api.output_dir/prices.csv`. Zwei unabhängige Schreiber befüllen
-dieselbe `date_unix,usd,eur`-Zeilenform:
+BTC-Preise, durchgängig minütlich (soweit verfügbar), alles in einer
+einzigen Datei: `mempool_api.output_dir/prices.csv`. Mehrere unabhängige
+Schreiber befüllen dieselbe `date_unix,usd,eur`-Zeilenform:
 
 - **Der live `prices`-Endpunkt** (siehe 6.4) pollt mempool.space alle
   60 s und hängt eine Zeile an – `date_unix` ist der Zeitstempel des
   Preises selbst, nicht der Abrufzeitpunkt.
-- **`import-price-history`** (`api/price_history_import.py`) füllt alles
-  vor diesem live gepollten Fenster aus zwei Kraken-1-Minuten-OHLC-
-  Exporten (`pricing.xbtusd_csv_path`/`pricing.xbteur_csv_path`, keine
-  Kopfzeile, Spalten
-  `unix_timestamp,open,high,low,close,volume,trades` – jeweils die
-  "_1"-Intervall-Datei verwenden), auf Minutenzeitstempel gejoint,
-  ausschließlich mit dem Schlusskurs.
+- **Ein einmaliger, extern durchgeführter Kraken-CSV-Import** deckt den
+  Großteil der Historie ab (kein eigenes Tool in dieser App mehr).
+- **`backfill_price_gap.py`** (`api/price_gap_backfill.py`) füllt die
+  verbleibende, meist kurze Lücke zwischen dem Ende dieses Kraken-Imports
+  und dem ersten live gepollten (per Cribl weitergeleiteten) Minutenwert.
 
-### `import-price-history` im Detail
+### `backfill_price_gap.py` im Detail
 
-1. Liest beide Kraken-CSVs vollständig ein (`_read_kraken_minute_closes()`)
-   und baut je eine `{unix_timestamp: close}`-Abbildung.
-2. Liest `prices.csv` vollständig zurück (`csv_parts_exist()`/
-   `read_csv_parts()`, über alle rotierten Parts hinweg), um bereits
-   vorhandene `date_unix`-Werte zu ermitteln.
-3. Vereinigt beide Minutenmengen (`usd_by_minute.keys() | eur_by_minute.keys()`)
-   abzüglich der bereits vorhandenen Minuten und schreibt für jede
-   verbleibende Minute eine Zeile. Eine Minute, die nur in einer der
-   beiden Dateien vorkommt, bekommt trotzdem eine Zeile – die andere
-   Währung bleibt `null`, genau wie beim Live-Endpunkt, der gelegentlich
-   eine Währung auslässt.
-4. Macht **keine** Netzwerkanfrage und berührt das `mempool_api`-
-   Rate-Limit-Budget nicht.
+Eigenständiges, manuell gestartetes Skript – kein `run.py`-Subkommando,
+keine config.yaml-Anbindung. Parameter kommen ausschließlich über die
+Kommandozeile:
 
-Idempotent: Bereits importierte Minuten werden anhand `date_unix`
-übersprungen, ein erneuter Lauf gegen eine aktualisierte/erweiterte
-Exportdatei fügt also nur das tatsächlich Neue hinzu. Fehlt eine der
-beiden Kraken-Dateien, bricht der Import mit einer klaren Fehlermeldung
-ab (Exit-Code 1), die auf die betroffene `pricing.*_csv_path`-Einstellung
-verweist.
+```sh
+python backfill_price_gap.py \
+  --start-timestamp 1690000000 \
+  --end-timestamp 1690003600 \
+  --export-dir parser-data/export/api
+```
 
-**Beliebige Reihenfolge relativ zu `api-poll`:** `import-price-history`
-lässt sich vor oder nach dem ersten `api-poll`-Start ausführen, beliebig
-oft wiederholt – da beide Schreiber dieselbe Datei mit identischem
-Zeilenschema befüllen und der Import bereits vorhandene Minuten
-überspringt, entstehen dabei keine Duplikate.
+- `--start-timestamp` / `--end-timestamp` – üblicherweise der letzte
+  bereits durch den Kraken-Import abgedeckte `date_unix` bzw. der
+  `date_unix` der ersten vom live Poller erfassten Minute.
+- `--export-dir` – Verzeichnis für `prices.csv` und den eigenen
+  Fortschritts-Checkpoint (`price_gap_backfill_state.csv`); auf
+  `mempool_api.output_dir` zeigen lassen.
+- `--rate-limit-per-minute` (Default 10) – **kein** Token-Bucket, nur ein
+  flaches `time.sleep()` zwischen Anfragen: bewusst einfach gehalten, da
+  dies ein kurzer, manuell begleiteter Einmallauf ist, kein
+  Dauerbetrieb mit geteiltem Budget.
+
+Ablauf pro Schritt:
+
+1. Ruft `GET {base_url}/api/v1/historical-price?currency=<c>&timestamp=<t>`
+   für die aktuelle Zeitmarke auf (Startwert: `--start-timestamp` bzw. der
+   gespeicherte Checkpoint) und erhöht die Zeitmarke danach um 60s
+   (passend zum Minutenschema von `prices.csv`).
+2. Der Endpunkt rundet die angefragte Zeitmarke auf den tatsächlich
+   nächstgelegenen mempool.space-Preispunkt (Granularität variiert mit
+   dem Alter) – geschrieben wird daher der `time`-Wert aus der Antwort,
+   nicht die angefragte Zeitmarke. Mehrere aufeinanderfolgende Anfragen
+   können so denselben bereits geschriebenen Preispunkt treffen; das wird
+   anhand von `date_unix` erkannt und übersprungen statt dupliziert.
+3. Ein HTTP-429 wird **nie wiederholt**: geloggt (Konsole +
+   `<export-dir>/price_gap_backfill.log`), Prozess beendet sich sofort
+   mit `EXIT_RATE_LIMITED` (75, dieselbe Konvention wie `api/poller.py`,
+   siehe 6.5) – der Checkpoint bleibt exakt am letzten erfolgreichen
+   Schritt stehen.
+4. Nach jedem Schritt wird der Fortschritt in
+   `<export-dir>/price_gap_backfill_state.csv` persistiert (Zeitmarke,
+   nicht das Ergebnis) – für manuelle Neustarts (siehe unten).
+
+**Neustart-sicher (manuell, nicht als Dienst gedacht):** Ein erneuter
+Lauf mit demselben `--start-timestamp` setzt am gespeicherten Checkpoint
+fort statt von vorne zu beginnen – egal ob der vorige Lauf durch einen
+429, einen Fehler oder Strg+C beendet wurde. Ein anderes
+`--start-timestamp` wird als neue, unabhängige Lücke behandelt und
+verwirft den alten Checkpoint. Da zusätzlich jede Zeile anhand
+`date_unix` gegen die bereits in `prices.csv` vorhandenen Werte geprüft
+wird, entstehen auch bei überlappenden Läufen keine Duplikate.
 
 **Warum `prices.csv` unter `mempool_api.output_dir` liegt, nicht unter
-einem eigenen Pricing-Verzeichnis:** `import-price-history` liest die
-volle Historie dieser Datei zurück, um Duplikate zu vermeiden (Schritt 2
+einem eigenen Pricing-Verzeichnis:** `backfill_price_gap.py` liest die
+volle Historie dieser Datei zurück, um Duplikate zu vermeiden (siehe
 oben) – genau deshalb muss sie in einem Splunk-`monitor`-Verzeichnis
 liegen (siehe Kapitel 7), das nie destruktiv gelöscht wird. Ein
 separates Pricing-Verzeichnis mit anderer Aufnahmestrategie hätte dieses
@@ -160,17 +184,17 @@ Sicherheitsversprechen gebrochen.
 
 ### Workflow für einen neuen Node
 
-1. Zwei Kraken-1-Minuten-OHLC-Exporte (XBTUSD, XBTEUR) besorgen und unter
-   `pricing.xbtusd_csv_path`/`pricing.xbteur_csv_path` ablegen (nicht
-   automatisiert – siehe Kapitel 9).
-2. Einmalig `python run.py import-price-history` ausführen – füllt
-   `prices.csv` mit der kompletten historischen Minutenzeitreihe, rein
-   lokal.
-3. `api-poll` starten (oder laufen lassen) – der live `prices`-Endpunkt
-   übernimmt ab dem Moment des ersten erfolgreichen Polls nahtlos weiter,
-   Minute für Minute.
-4. Nach jeder Downtime bleibt lediglich eine Lücke in `prices.csv` für den
-   Ausfallzeitraum – siehe Kapitel 9 für die Einordnung.
+1. Historische BTC/USD+EUR-Preise extern besorgen und einmalig in
+   `prices.csv` einspielen (Kraken-CSV-Export o.ä. – nicht mehr Teil
+   dieser App).
+2. `api-poll` starten (oder laufen lassen) – der live `prices`-Endpunkt
+   übernimmt ab dem Moment des ersten erfolgreichen Polls Minute für
+   Minute.
+3. Die verbleibende Lücke zwischen Schritt 1 und dem ersten erfolgreichen
+   Poll aus Schritt 2 mit `backfill_price_gap.py` auffüllen (siehe oben).
+4. Nach jeder weiteren Downtime bleibt lediglich eine neue Lücke in
+   `prices.csv` für den Ausfallzeitraum – siehe Kapitel 9 für die
+   Einordnung; ggf. erneut mit `backfill_price_gap.py` schließen.
 
 ## 6.7 Mining-Pool-Signaturdatenset
 

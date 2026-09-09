@@ -9,10 +9,9 @@
 - `bitcoin-cli` muss im `PATH` liegen und den eigenen Node erreichen
   können – entweder lokal konfiguriert (`bitcoin.conf`/Cookie-Datei) oder
   über `rpc.extra_args` gegen einen entfernten Node (siehe Kapitel 3).
-- Netzwerkzugriff auf `mempool.space` (HTTPS) für `api-poll`, sowie auf
-  `raw.githubusercontent.com` für die Mining-Pool- und
-  Stale-Blocks-Datensets. `import-price-history` selbst braucht keinen
-  Netzwerkzugriff (siehe Kapitel 6.6).
+- Netzwerkzugriff auf `mempool.space` (HTTPS) für `api-poll` sowie für
+  `backfill_price_gap.py`, und auf `raw.githubusercontent.com` für die
+  Mining-Pool- und Stale-Blocks-Datensets (siehe Kapitel 6.6).
 
 ## 2.2 Einrichtung
 
@@ -121,12 +120,16 @@ python run.py api-poll
 # config/pools-v2.json von GitHub aktualisieren (normalerweise automatisch
 # durch rpc-ingest erledigt - siehe Kapitel 4)
 python run.py update-pools-dataset
+```
 
-# Einmaliger (idempotenter) Bulk-Import zweier Kraken-1-Minuten-OHLC-CSVs
-# (XBTUSD, XBTEUR) in dieselbe prices.csv, in die auch api-poll live
-# schreibt - siehe Kapitel 6. Rein lokal (kein Netzwerkzugriff), beliebig
-# vor oder nach dem ersten api-poll-Start ausführbar.
-python run.py import-price-history
+`backfill_price_gap.py` ist ein eigenständiges Skript (kein
+`run.py`-Subkommando, keine config.yaml-Anbindung) für die Lücke zwischen
+einem einmaligen, extern durchgeführten Preis-Historie-Import und dem
+ersten live gepollten `prices`-Wert - siehe Kapitel 6.6:
+
+```sh
+python backfill_price_gap.py --start-timestamp UNIX --end-timestamp UNIX \
+  --export-dir parser-data/export/api
 ```
 
 Jedes Kommando akzeptiert eine `--config path/zu/anderer-config.yaml`-
@@ -247,9 +250,13 @@ systemd-Units gegen dieselbe Konfiguration laufen (s. o., PID-Check in
 | `stale-blocks-ingest` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 5 |
 | `api-poll` | dauerhaft | `SIGTERM`/`SIGINT`/HTTP 429 | 0 (sauberer Stop) / 75 (429) | Siehe Kapitel 6 |
 | `update-pools-dataset` | einmalig | selbst | 0 / 1 (Fehler) | Siehe Kapitel 4 |
-| `import-price-history` | einmalig | selbst | 0 / 1 (Fehler) | Siehe Kapitel 6 |
 
 Ein Konfigurationsfehler (fehlender/ungültiger Wert in `config.yaml`,
-fehlende Datei, kaputtes YAML) führt bei jedem Kommando zu Exit-Code 2 und
-einer Fehlermeldung auf stderr, statt eines rohen Python-Tracebacks (siehe
-`btc_parser_app/cli.py:main()`).
+fehlende Datei, kaputtes YAML) führt bei jedem der obigen Kommandos zu
+Exit-Code 2 und einer Fehlermeldung auf stderr, statt eines rohen
+Python-Tracebacks (siehe `btc_parser_app/cli.py:main()`).
+
+`backfill_price_gap.py` ist kein `run.py`-Kommando (siehe Kapitel 6.6) und
+läuft daher außerhalb dieser Tabelle: einmalig, beendet sich selbst,
+Exit-Code 0 (fertig/nichts zu tun) / 1 (Fehler) / 75 (HTTP 429, wie
+`api-poll`) / 2 (`--rate-limit-per-minute <= 0`).

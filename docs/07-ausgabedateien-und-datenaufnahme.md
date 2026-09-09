@@ -188,7 +188,7 @@ neuesten Datei, keine zusätzliche Betriebsdisziplin nötig:
   löscht nie; alte rotierte Parts müssen von Hand oder per eigenem
   Cron-Job aufgeräumt werden, sobald die Indizierung durch Splunk
   bestätigt ist. Für `export/api/prices.csv` gilt das zusätzlich
-  zwingend: `import-price-history` liest diese Datei vollständig zurück,
+  zwingend: `backfill_price_gap.py` liest diese Datei vollständig zurück,
   um Duplikate zu vermeiden (Kapitel 6.6) – sie darf also nie unter der
   Anwendung weggelöscht werden.
 

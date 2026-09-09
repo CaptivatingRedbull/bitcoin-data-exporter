@@ -161,29 +161,6 @@ def _load_mining_pools_dataset(
 
 
 # =============================================================================
-# pricing (one-time historic minute-candle import into mempool_api's prices.csv)
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class PricingConfig:
-    xbtusd_csv_path: Path
-    xbteur_csv_path: Path
-
-
-def _load_pricing(raw: dict[str, Any], root: Path) -> PricingConfig:
-    section = _require(raw, "pricing", "root")
-    return PricingConfig(
-        xbtusd_csv_path=_resolve_path(
-            root, _require(section, "xbtusd_csv_path", "pricing")
-        ),
-        xbteur_csv_path=_resolve_path(
-            root, _require(section, "xbteur_csv_path", "pricing")
-        ),
-    )
-
-
-# =============================================================================
 # rpc
 # =============================================================================
 
@@ -377,7 +354,6 @@ class AppConfig:
     logging: LoggingConfig
     mempool_api: MempoolApiConfig
     mining_pools_dataset: MiningPoolsDatasetConfig
-    pricing: PricingConfig
     rpc: RpcConfig
     stale_blocks: StaleBlocksConfig
 
@@ -401,7 +377,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         logging=_load_logging(raw, root),
         mempool_api=_load_mempool_api(raw, root),
         mining_pools_dataset=_load_mining_pools_dataset(raw, root),
-        pricing=_load_pricing(raw, root),
         rpc=_load_rpc(raw, root),
         stale_blocks=_load_stale_blocks(raw, root),
     )
