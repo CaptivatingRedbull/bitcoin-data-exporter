@@ -22,10 +22,13 @@ Commands:
                             see btc_parser_app/api/poller.py::EXIT_RATE_LIMITED - so a systemd unit
                             can restart on a real crash without restart-looping on a 429.
     update-pools-dataset    Force-refresh config/pools-v2.json from GitHub
-    import-price-history    One-time (idempotent) bulk import of pricing.xbtusd_csv_path/
-                            pricing.xbteur_csv_path (Kraken 1-minute OHLC exports) into
-                            mempool_api.output_dir/prices.csv - the same minutely file api-poll
-                            appends to live (see README.md's Pricing section).
+
+Historic price gap backfill (the one-time period between a Kraken CSV
+import and the first live api-poll/Cribl-forwarded minute) is a separate,
+standalone script - not a subcommand of this file, since it takes its
+parameters on the command line instead of from config.yaml:
+    python backfill_price_gap.py --start-timestamp UNIX --end-timestamp UNIX --export-dir PATH
+See btc_parser_app/api/price_gap_backfill.py for details.
 
 For always-on production use, don't invoke this directly - use ../start.sh,
 which also makes sure bitcoind is up first and runs both long-running
@@ -46,7 +49,6 @@ import yaml
 from btc_parser_app.api.client import FetchError, RateLimited
 from btc_parser_app.api.mining_pools_dataset import refresh as refresh_pools_dataset
 from btc_parser_app.api.poller import run_poller
-from btc_parser_app.api.price_history_import import import_price_history
 from btc_parser_app.common.logging_setup import configure_logging
 from btc_parser_app.config import ConfigError, load_config
 from btc_parser_app.rpc.ingest import run_rpc_ingest
@@ -82,10 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("api-poll", help="Run the mempool.space endpoint poller")
     subparsers.add_parser(
         "update-pools-dataset", help="Force-refresh config/pools-v2.json from GitHub"
-    )
-    subparsers.add_parser(
-        "import-price-history",
-        help="One-time (idempotent) bulk import of the Kraken minute CSVs into prices.csv",
     )
 
     return parser
@@ -128,15 +126,6 @@ def main(argv: list[str] | None = None) -> int:
             refresh_pools_dataset(config.mining_pools_dataset)
         except (RateLimited, FetchError, ValueError) as exc:
             print(f"Failed to refresh pools dataset: {exc}", file=sys.stderr)
-            return 1
-        return 0
-
-    if args.command == "import-price-history":
-        prices_path = config.mempool_api.output_dir / "prices.csv"
-        try:
-            import_price_history(config.pricing, prices_path)
-        except (FileNotFoundError, ValueError) as exc:
-            print(f"Failed to import price history: {exc}", file=sys.stderr)
             return 1
         return 0
 

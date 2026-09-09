@@ -65,10 +65,10 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | `__init__.py` | Leer. |
 | `rate_limiter.py` | `TokenBucket` – Thread-sicherer Token-Bucket-Ratenbegrenzer, setzt `mempool_api.rate_limit` durch. Siehe Kapitel 6.2. |
 | `client.py` | `ApiClient` – ratenbegrenzter HTTP-GET-Client mit Retry-/Timeout-/429-Handling (`get_json()`), plus die Exceptions `RateLimited`/`FetchError` und die geteilte `handle_rate_limited()`-Reaktion. Siehe Kapitel 6.2, 6.5. |
-| `mempool_endpoints.py` | JSON-zu-Zeilen-Parser für den `prices`-Endpunkt (`parse_prices`) sowie die `PARSER_REGISTRY`, die `config.yaml`s `endpoints[].parser`-Strings auf diese Funktion abbildet. `parse_prices` schreibt in derselben `date_unix,usd,eur`-Form wie `price_history_import.py`. Siehe Kapitel 6.4. |
+| `mempool_endpoints.py` | JSON-zu-Zeilen-Parser für den `prices`-Endpunkt (`parse_prices`) sowie die `PARSER_REGISTRY`, die `config.yaml`s `endpoints[].parser`-Strings auf diese Funktion abbildet. `parse_prices` schreibt in derselben `date_unix,usd,eur`-Form wie `price_gap_backfill.py`. Siehe Kapitel 6.4. |
 | `poller.py` | `run_poller()` – startet einen Thread pro konfiguriertem Endpunkt (`endpoint_loop()`, `fetch_and_write()`); verwaltet Start-Offsets (`compute_start_offsets()`) und das gemeinsame Stop-/429-Signaling. Kein Preis-Lückenfüller-Thread mehr. Der einzige Einstiegspunkt für das Kommando `api-poll`. Siehe Kapitel 6.3. |
 | `mining_pools_dataset.py` | Aktualisiert `config/pools-v2.json` von GitHub (`fetch_pools_dataset()`, `refresh()`, `refresh_if_stale()`). Wird sowohl vom Kommando `update-pools-dataset` als auch automatisch von `rpc-ingest` aufgerufen. Siehe Kapitel 4.8. |
-| `price_history_import.py` | `import_price_history()` – einmaliger, rein lokaler (kein Netzwerkzugriff) Bulk-Import zweier Kraken-1-Minuten-OHLC-CSVs, gejoint auf Minutenzeitstempel, in `mempool_api.output_dir/prices.csv`. Der einzige Einstiegspunkt für das Kommando `import-price-history`. Siehe Kapitel 6.6. |
+| `price_gap_backfill.py` | `run_backfill()` – eigenständiges, manuell gestartetes Skript (`backfill_price_gap.py`, kein `run.py`-Subkommando), das mempool.space's `historical-price`-Endpunkt minutenweise zwischen zwei per Kommandozeile übergebenen Unix-Zeitstempeln abfragt und in `mempool_api.output_dir/prices.csv` schreibt. Eigener Fortschritts-Checkpoint für manuelle Neustarts, flaches `time.sleep()` statt Token-Bucket. Siehe Kapitel 6.6. |
 
 ## 8.3 Abhängigkeitsrichtung (vereinfacht)
 
@@ -95,10 +95,17 @@ run.py
        │    ├─ btc_parser_app.api.client
        │    │    └─ btc_parser_app.api.rate_limiter
        │    └─ btc_parser_app.api.mempool_endpoints
-       ├─ btc_parser_app.api.mining_pools_dataset
-       └─ btc_parser_app.api.price_history_import
-            └─ btc_parser_app.common.csv_writer
+       └─ btc_parser_app.api.mining_pools_dataset
+
+backfill_price_gap.py
+  └─ btc_parser_app.api.price_gap_backfill
+       ├─ btc_parser_app.api.client
+       └─ btc_parser_app.common.csv_writer
 ```
+
+`backfill_price_gap.py` ist bewusst kein Zweig unter `run.py`/`cli.py` –
+es liest kein `config.yaml`, sondern nimmt alle Parameter über die eigene
+Kommandozeile entgegen (siehe Kapitel 6.6).
 
 `btc_parser_app.common.*` (nicht vollständig abgebildet, da von
 praktisch jedem Modul verwendet) enthält keine Abhängigkeiten auf andere

@@ -65,14 +65,6 @@ mining_pools_dataset:
   local_path: "config/pools-v2.json"
   refresh_interval_seconds: 604800
 
-# -----------------------------------------------------------------------
-# BTC price history import - see config.yaml's comments for what each key
-# does. Same paths as the other sections above (local dev-relative; these
-# CSVs are placed by hand, not on the PVC).
-# -----------------------------------------------------------------------
-pricing:
-  xbtusd_csv_path: "config/XBTUSD_1.csv"
-  xbteur_csv_path: "config/XBTEUR_1.csv"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)

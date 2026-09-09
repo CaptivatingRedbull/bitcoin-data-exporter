@@ -31,8 +31,8 @@ mempool_api:
   # ever-growing/rotating file, so there's no per-write "complete file" the
   # way rpc.output_dir's per-block exports have once caught up - and
   # prices.csv specifically must never be deleted out from under this app,
-  # since import-price-history reads its full history back to dedupe (see
-  # Pricing below).
+  # since backfill_price_gap.py reads its full history back to dedupe (see
+  # btc_parser_app/api/price_gap_backfill.py).
   output_dir: "parser-data/export/api"
 
   request_timeout_seconds: 20
@@ -43,11 +43,12 @@ mempool_api:
   retry_backoff_seconds: 3.0
 
   # Shared token-bucket budget covering every request this app makes
-  # against mempool.space. requests_per_minute is the steady-state refill
-  # rate; bucket_size is the burst allowance (how many requests can fire
-  # back-to-back before the rate limit kicks in). 10 req/min: 1 is drawn by
-  # the live `prices` poll below (60s interval), the remaining 9 is
-  # reserved for historical price backfill.
+  # against mempool.space via api-poll. requests_per_minute is the
+  # steady-state refill rate; bucket_size is the burst allowance (how many
+  # requests can fire back-to-back before the rate limit kicks in). Only
+  # the live `prices` poll below draws from this (60s interval, so ~1
+  # req/min) - backfill_price_gap.py is a separate standalone script with
+  # its own --rate-limit-per-minute, not governed by this budget.
   rate_limit:
     requests_per_minute: 10
     bucket_size: 10
@@ -77,24 +78,6 @@ mining_pools_dataset:
   # without ever running the refresh.
   refresh_interval_seconds: 604800
 
-# -----------------------------------------------------------------------
-# BTC price history: a one-time bulk import of two Kraken 1-minute OHLC
-# exports (one per currency pair) into mempool_api.output_dir/prices.csv -
-# the exact same file the "prices" endpoint above appends to live, every
-# 60s. Both writers produce the same row shape (date_unix, usd, eur), so
-# historic and live-polled data end up in one minutely file with no
-# separate daily table to reconcile.
-# -----------------------------------------------------------------------
-pricing:
-  # Point these at Kraken's historical-data downloads for the "_1" (1-minute
-  # candle) interval. No header row; columns are
-  # unix_timestamp,open,high,low,close,volume,trades - only the close price
-  # is kept. Run `python run.py import-price-history` once after placing
-  # both files here - it's idempotent (skips minutes already in
-  # prices.csv), so re-running against a refreshed/extended export only
-  # adds what's new.
-  xbtusd_csv_path: "config/XBTUSD_1.csv"
-  xbteur_csv_path: "config/XBTEUR_1.csv"
 
 # -----------------------------------------------------------------------
 # bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md).

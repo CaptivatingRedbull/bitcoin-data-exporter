@@ -46,18 +46,20 @@ eigenem Log und eigener Restart-Policy (`Restart=always`) zu verpacken –
 Dauerbetriebs-Hosts ab, starten einen abgestürzten Prozess aber nicht
 automatisch neu.
 
-## 1.3 Zwei zusätzliche, einmalig auszuführende Kommandos
+## 1.3 Punktuell auszuführende Kommandos/Skripte
 
-Neben den drei Dauerprozessen gibt es zwei Kommandos, die punktuell
-ausgeführt werden:
+Neben den drei Dauerprozessen gibt es:
 
 - `update-pools-dataset` – aktualisiert das Mining-Pool-Signaturdatenset
   von GitHub (normalerweise automatisch durch `rpc-ingest` erledigt, siehe
   Kapitel 4).
-- `import-price-history` – einmaliger (aber beliebig wiederholbarer)
-  Bulk-Import zweier Kraken-1-Minuten-OHLC-CSV-Exporte (XBTUSD, XBTEUR) in
-  dieselbe `prices.csv`, in die auch `api-poll`s `prices`-Endpunkt live
-  schreibt (siehe Kapitel 6). Rein lokal, ohne Netzwerkzugriff.
+- `backfill_price_gap.py` – eigenständiges, manuell gestartetes Skript
+  (kein `run.py`-Subkommando), das die Lücke zwischen einem einmaligen,
+  extern durchgeführten Preis-Historie-Import und dem ersten live
+  gepollten `prices`-Wert über mempool.spaces `historical-price`-Endpunkt
+  minutenweise auffüllt, in dieselbe `prices.csv` wie `api-poll` (siehe
+  Kapitel 6.6). Eigenes, flaches Rate-Limiting per `time.sleep()` und ein
+  eigener Fortschritts-Checkpoint für manuelle Neustarts.
 
 ## 1.4 Konfigurationsprinzip
 
@@ -101,14 +103,19 @@ austauschen, ohne Code zu verändern (siehe Kapitel 3).
                                │
               prices.csv (date_unix,usd,eur; 60s-Takt)
 
-     ┌────────────────────────────┐
-     │ 2× Kraken-1-Minuten-Export  │
-     │ (XBTUSD_1.csv, XBTEUR_1.csv,│
-     │  manuell heruntergeladen)   │
-     └────────────┬────────────────┘
-                  │ import-price-history (einmalig, rein lokal)
-                  ▼
-     dieselbe prices.csv (auf Minute gejoint, keine Duplikate)
+     ┌────────────────────────────┐      ┌───────────────────────────┐
+     │ Kraken-Preis-Historie       │      │ mempool.space              │
+     │ (extern, einmalig, manuell  │      │ /api/v1/historical-price   │
+     │  in prices.csv eingespielt) │      └─────────────┬─────────────┘
+     └────────────┬────────────────┘                    │ HTTP GET (eigenes,
+                  │                                      │ flaches Rate-Limit)
+                  │                         ┌────────────▼─────────────┐
+                  │                         │ backfill_price_gap.py     │
+                  │                         │ (manuell, minutenweise,   │
+                  │                         │  Checkpoint für Neustart) │
+                  │                         └────────────┬─────────────┘
+                  ▼                                       ▼
+     dieselbe prices.csv (dedupliziert über date_unix, keine Duplikate)
 ```
 
 Alle erzeugten CSV-Dateien sind für den Import in Splunk (oder ein

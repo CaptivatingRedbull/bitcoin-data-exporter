@@ -32,6 +32,7 @@ full_app/
   start.sh                      production-style startup: checks bitcoind, launches all three services in the background
   stop.sh                       stops what start.sh started
   run.py                       convenience CLI entrypoint
+  backfill_price_gap.py        standalone, manually-run historic price gap backfill - see Pricing below
   requirements.txt
   parser-data/                  all runtime data (created on first run) - logs/, state/{rpc,stale}
                                  (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale}
@@ -40,7 +41,6 @@ full_app/
     config.yaml                 all settings (see below)
     config.production.yaml      same schema, pointed at the production pod's paths (see "Production deployment" below)
     pools-v2.json                bundled mining-pool signature dataset
-    XBTUSD_1.csv / XBTEUR_1.csv  (not bundled) drop your Kraken 1-minute OHLC exports here - see Pricing below
   btc_parser_app/
     config.py                    loads+validates config.yaml
     common/
@@ -52,7 +52,7 @@ full_app/
       mempool_endpoints.py         per-endpoint JSON -> row parsers
       poller.py                    threaded interval poller
       mining_pools_dataset.py      refreshes config/pools-v2.json from GitHub
-      price_history_import.py      one-time bulk import of two Kraken minute OHLC CSVs into prices.csv ("import-price-history")
+      price_gap_backfill.py        standalone historic price gap backfill against mempool.space's historical-price endpoint
     rpc/                          bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
       client.py                    bitcoin-cli subprocess wrapper
       block_parser.py              block/tx JSON -> flat CSV rows
@@ -162,12 +162,12 @@ python run.py api-poll
 
 # Refresh config/pools-v2.json from GitHub (normally automatic - see below)
 python run.py update-pools-dataset
-
-# One-time (idempotent) bulk import of two Kraken 1-minute OHLC CSVs into
-# prices.csv - see Pricing below. Safe to run before or after api-poll has
-# started; already-imported minutes are skipped.
-python run.py import-price-history
 ```
+
+`backfill_price_gap.py` is a separate, standalone script (not a `run.py`
+subcommand, no config.yaml involvement) for filling the gap between the
+end of a historic price import and the start of live `api-poll`/Cribl
+coverage - see **Pricing** below.
 
 Every command accepts a `--config path/to/other-config.yaml` option to run
 against a different config file (e.g. for a second node, or a test config).
@@ -185,8 +185,10 @@ The mempool.space HTTP poller. `rate_limit.requests_per_minute` /
 `rate_limit.bucket_size` define a single shared token bucket that every
 `endpoints` request draws from, so raising either value raises the
 effective rate for the whole poller against that host, not per-endpoint.
-The default (10 req/min, burst of 10) is split 1 req/min for the live
-`prices` poll and 9 req/min reserved for historical price backfill.
+The default (10 req/min, burst of 10) is only drawn on by the live
+`prices` poll (~1 req/min at its 60s interval) - `backfill_price_gap.py`
+(see **Pricing** below) is a separate standalone script with its own
+`--rate-limit-per-minute`, not governed by this budget.
 
 `endpoints` is a list of `{name, path, parser, interval_seconds}`. Each
 `parser` name must match a `parse_<name>` function registered in
@@ -220,42 +222,64 @@ matching the upstream project's own update cadence. A failed refresh logs a
 warning and keeps using the existing local copy rather than breaking
 ingestion.
 
-### `pricing`
+### Pricing
 
 BTC price history, minutely throughout, all in one file:
 `mempool_api.output_dir/prices.csv`. The live `prices` endpoint (see
 `mempool_api.endpoints` above) polls mempool.space every 60s and appends a
 `date_unix,usd,eur` row (`btc_parser_app/api/mempool_endpoints.py`'s
 `parse_prices`) - `date_unix` is the price's own timestamp, not when it was
-fetched. `python run.py import-price-history` fills in everything before
-that live-polled window from two Kraken 1-minute OHLC/candle CSV exports
-(their historical-data download, no header row:
-`unix_timestamp,open,high,low,close,volume,trades` - use the "_1"-interval
-file for each pair), joined on minute timestamp and written in the exact
-same `date_unix,usd,eur` shape
-(`btc_parser_app/api/price_history_import.py`):
+fetched. Historic data (before this app existed, or a gap left by
+downtime) is backfilled by two separate, unrelated paths that both write
+the exact same `date_unix,usd,eur` shape into the same file:
 
-- **`pricing.xbtusd_csv_path`** - path to the XBTUSD "_1" export; its
-  close price becomes each row's `usd`.
-- **`pricing.xbteur_csv_path`** - path to the XBTEUR "_1" export; its
-  close price becomes each row's `eur`.
+- **A one-time Kraken CSV import**, done by hand/externally (this app no
+  longer ships an importer for it) for the bulk of the history.
+- **`backfill_price_gap.py`** (`btc_parser_app/api/price_gap_backfill.py`)
+  - a standalone, manually-run script (not a `run.py` subcommand, no
+  config.yaml involvement) for the *short* remaining gap between where
+  that Kraken import stops and where live `api-poll`/Cribl-forwarded
+  coverage picks up. It walks mempool.space's
+  `/api/v1/historical-price?currency=<c>&timestamp=<t>` endpoint one
+  minute at a time between two unix timestamps you provide:
 
-Both currencies get merged by minute timestamp (a minute present in only
-one file still gets a row, with the other currency left null - same as
-mempool.space's live endpoint occasionally omitting a currency).
-Already-imported minutes are skipped by `date_unix`, so it's safe to run
-`import-price-history` repeatedly (before or after `api-poll` has started,
-in any order) - re-running against a refreshed/extended export only adds
-what's new, and it never collides with what the live poller is writing.
+  ```sh
+  python backfill_price_gap.py \
+    --start-timestamp 1690000000 \
+    --end-timestamp 1690003600 \
+    --export-dir parser-data/export/api
+  ```
 
-This dedupe reads `prices.csv`'s full history back, which is exactly why it
+  - `--start-timestamp` / `--end-timestamp` - typically the last `date_unix`
+    already covered by the Kraken import, and the `date_unix` of the first
+    minute captured by the live poller, respectively.
+  - `--export-dir` - where `prices.csv` (and this script's own resume
+    checkpoint) live; point it at the same directory as
+    `mempool_api.output_dir`.
+  - `--rate-limit-per-minute` (default 10) - enforced with a flat
+    `time.sleep()` between requests, not a token bucket - this is a
+    short, manually-babysat one-off, not a shared long-running service.
+  - A 429 from mempool.space is never retried: it's logged and the script
+    exits immediately, leaving its checkpoint exactly where it stopped.
+  - Safe to interrupt and re-run (manually, not as a service): progress is
+    checkpointed to `<export-dir>/price_gap_backfill_state.csv` after every
+    request, and rows already in `prices.csv` are never duplicated. Re-run
+    the same `--start-timestamp` to resume; a different one starts fresh.
+  - The endpoint snaps a requested timestamp to whatever price point
+    mempool.space actually has nearest it (granularity varies with age),
+    so the row written is keyed by the response's own time, not the
+    requested one - consecutive requested minutes can resolve to the same
+    already-written row and are silently skipped rather than duplicated.
+
+Both backfill paths and the live poller share one dedupe rule (by
+`date_unix`), so they can run in any order, any number of times, without
+ever colliding or duplicating rows - which is exactly why `prices.csv`
 lives under `mempool_api.output_dir` (Splunk-facing, `export/api/`) with a
 `monitor` input rather than a `batch` one, same as every other endpoint
-there: `monitor` never deletes, so the file this app depends on for
+there: `monitor` never deletes, so the file these backfills depend on for
 correctness and the file Splunk indexes from stay the same file - no
-separate copy to keep in sync, no risk of `import-price-history` silently
-missing already-indexed-and-deleted minutes and re-importing them as
-duplicates.
+separate copy to keep in sync, no risk of silently missing
+already-indexed-and-deleted minutes and re-importing them as duplicates.
 
 ### `rpc`
 
@@ -550,7 +574,7 @@ steady-state, no excluding the newest file, no config discipline required:
   mid-write. `monitor` never deletes, so clean up old rotated parts
   yourself (by hand, or a cron job) once you've confirmed Splunk has indexed
   them - and for `export/api/prices.csv` specifically, this isn't just the
-  safer default: `import-price-history` reads that file's full history back
+  safer default: `backfill_price_gap.py` reads that file's full history back
   to dedupe (see **Pricing** above), so it must never be deleted out from
   under this app in the first place.
 
