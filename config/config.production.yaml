@@ -36,7 +36,7 @@ logging:
   log_dir: "/parser-data/logs"
 
 # -----------------------------------------------------------------------
-# mempool.space HTTP API fetcher ("api_ingest" in Script_plan.md)
+# mempool.space HTTP API fetcher ("api-poll" command)
 # -----------------------------------------------------------------------
 mempool_api:
   base_url: "https://mempool.space"
@@ -67,7 +67,7 @@ mining_pools_dataset:
 
 
 # -----------------------------------------------------------------------
-# bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md)
+# bitcoin-cli / RPC block fetcher ("rpc-ingest" command)
 # -----------------------------------------------------------------------
 rpc:
   bitcoin_cli_path: "/home/linuxbrew/.linuxbrew/bin/bitcoin-cli"

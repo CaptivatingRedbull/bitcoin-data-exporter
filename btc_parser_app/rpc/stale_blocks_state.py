@@ -35,7 +35,7 @@ HEADER_ONLY = "header_only"
 _STATUS_RANK = {UNUSABLE: 0, HEADER_ONLY: 1}
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
@@ -111,7 +111,7 @@ class StaleBlockRegistry:
                 source=source,
                 chaintip_status=chaintip_status,
                 branchlen=branchlen,
-                first_seen=_now_iso(),
+                first_seen=now_iso(),
             )
             self._entries[blockhash] = entry
             self._dirty = True

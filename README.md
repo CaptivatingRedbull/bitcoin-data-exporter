@@ -29,41 +29,48 @@ budget, RPC connection details, output paths - lives in
 
 ```
 full_app/
-  start.sh                      production-style startup: checks bitcoind, launches all three services in the background
-  stop.sh                       stops what start.sh started
+  start.sh                     production-style startup: checks bitcoind, launches all three services in the background
+  stop.sh                      stops what start.sh started
+  lib.sh                       shared helpers for start.sh/stop.sh
   run.py                       convenience CLI entrypoint
   backfill_price_gap.py        standalone, manually-run historic price gap backfill - see Pricing below
   requirements.txt
-  parser-data/                  all runtime data (created on first run) - logs/, state/{rpc,stale}
-                                 (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale}
-                                 (Splunk-facing - see config.yaml reference below)
+  parser-data/                 all runtime data (created on first run) - logs/, state/{rpc,stale}
+                                (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale}
+                                (Splunk-facing - see config.yaml reference below)
   config/
-    config.yaml                 all settings (see below)
-    config.production.yaml      same schema, pointed at the production pod's paths (see "Production deployment" below)
-    pools-v2.json                bundled mining-pool signature dataset
+    config.yaml                all settings (see below)
+    config.production.yaml     same schema, pointed at the production pod's paths (see "Production deployment" below)
+    pools-v2.json              bundled mining-pool signature dataset
+  systemd/                     unit templates + install.sh for a hardened, reboot-safe deployment
+  splunk/                      Splunk add-ons (forwarder inputs, parsing/props)
+  docs/                        full German-language reference
   btc_parser_app/
-    config.py                    loads+validates config.yaml
+    config.py                  loads+validates config.yaml
+    cli.py                     argparse entrypoint, wired to run.py
     common/
-      csv_writer.py               shared append-only, size-rotated CSV writer
-      logging_setup.py             console + rotating-file logging
-    api/                          mempool.space side ("api-poll")
-      rate_limiter.py              token-bucket rate limiter
-      client.py                    rate-limited HTTP GET client (retries, 429 handling)
-      mempool_endpoints.py         per-endpoint JSON -> row parsers
-      poller.py                    threaded interval poller
-      mining_pools_dataset.py      refreshes config/pools-v2.json from GitHub
-      price_gap_backfill.py        standalone historic price gap backfill against mempool.space's historical-price endpoint
-    rpc/                          bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
-      client.py                    bitcoin-cli subprocess wrapper
-      block_parser.py              block/tx JSON -> flat CSV rows
-      mining_pools.py              mining pool extractor (tag + address matching)
-      reorg_state.py               index/current.csv/latest.csv/block_status.csv/reorg/ state files
-      part_writer.py                state_dir->output_dir handoff + atomic per-block writes for blocks/transactions
-      ingest.py                     genesis-to-tip catch-up + continuous reorg-aware tip-following
-      stale_blocks.py               stale/orphaned chain-tip pipeline ("stale-blocks-ingest")
-      stale_blocks_github.py        pulls the bitcoin-data/stale-blocks GitHub dataset
-      stale_blocks_state.py         registry.csv - internal bookkeeping for stale_blocks.py
-    cli.py                        argparse entrypoint, wired to run.py
+      csv_writer.py            shared append-only, size-rotated CSV writer
+      atomic_write.py          temp-file + rename whole-file replacement for state files
+      block_header.py          raw 80-byte block header parsing + hash validation
+      logging_setup.py         console + rotating-file logging
+      stop_signal.py           SIGTERM/SIGINT -> stop event for the long-running loops
+    api/                       mempool.space side ("api-poll")
+      rate_limiter.py          token-bucket rate limiter
+      client.py                rate-limited HTTP GET client (retries, 429 handling)
+      mempool_endpoints.py     per-endpoint JSON -> row parsers
+      poller.py                threaded interval poller
+      mining_pools_dataset.py  refreshes config/pools-v2.json from GitHub
+      price_gap_backfill.py    standalone historic price gap backfill against mempool.space's historical-price endpoint
+    rpc/                       bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
+      client.py                bitcoin-cli subprocess wrapper
+      block_parser.py          block/tx JSON -> flat CSV rows
+      mining_pools.py          mining pool extractor (tag + address matching)
+      reorg_state.py           index/current.csv/latest.csv/block_status.csv/reorg/ state files
+      part_writer.py           state_dir->output_dir handoff + atomic per-block writes for blocks/transactions
+      ingest.py                genesis-to-tip catch-up + continuous reorg-aware tip-following
+      stale_blocks.py          stale/orphaned chain-tip pipeline ("stale-blocks-ingest")
+      stale_blocks_github.py   pulls the bitcoin-data/stale-blocks GitHub dataset
+      stale_blocks_state.py    registry.csv - internal bookkeeping for stale_blocks.py
 ```
 
 ## Setup
@@ -105,9 +112,10 @@ remote node).
    under `.pids/`. Re-running `start.sh` is safe - anything already running
    is left alone.
 
-All three commands log to `logs/<command>.log` (rotating, 20MB x5) in
-addition to their raw stdout/stderr at `logs/<command>.out`. Point at a
-different config file with `BTC_PARSER_CONFIG=/path/other.yaml ./start.sh`.
+All three commands log to `<logging.log_dir>/<command>.log` (rotating,
+20MB x5; default `parser-data/logs/`), with their raw stdout/stderr next to
+it at `<command>.out`. Point at a different config file with
+`BTC_PARSER_CONFIG=/path/other.yaml ./start.sh`.
 
 `stop.sh` sends SIGTERM to all three PIDs - `rpc-ingest`/`stale-blocks-ingest`
 finish their current batch/pass and checkpoint cleanly before exiting;
@@ -116,11 +124,11 @@ the same way it would on Ctrl-C. Neither script ever touches bitcoind, on
 startup or shutdown - it's entirely out of scope for both; stop it yourself
 with `bitcoin-cli stop` if you want it down too.
 
-For a hardened Linux deployment, wrap the three `python run.py rpc-ingest` /
-`python run.py stale-blocks-ingest` / `python run.py api-poll` commands in
-their own systemd units instead (each gets its own unit, logs, and restart
-policy) - `start.sh`/`stop.sh` cover local/dev use and simple always-on
-hosts, but don't restart a crashed process the way `Restart=always` would.
+For a hardened Linux deployment, use `sudo systemd/install.sh` instead: it
+installs one systemd unit per service (restart-on-crash, survives reboots,
+and never restart-loops `api-poll` into a 429). `start.sh`/`stop.sh` cover
+local/dev use and simple always-on hosts, but don't restart a crashed
+process.
 
 ### Production deployment
 
@@ -535,11 +543,6 @@ If a reorg happened at some point in the past but never touched anything
 this run's starting point cares about, it makes no difference - the
 normal loop and the reorg-recovery path are the same code either way, so
 there's nothing to reconcile specially at startup.
-
-This app intentionally does not implement a mempool.space-side per-block
-pool-history backfill (paging through `/api/v1/blocks*` to redundantly
-re-derive attribution the RPC-side extractor already produces locally) -
-see **Mining pool extractor** above for why.
 
 ## Storage & Splunk ingestion
 

@@ -64,11 +64,10 @@ Abhängigkeiten (`requirements.txt`): `polars` (CSV-/DataFrame-Verarbeitung),
 Alle drei Kommandos loggen strukturiert nach
 `logging.log_dir/<kommando>.log` (rotierend, 20 MB × 5 Dateien – Standard
 `parser-data/logs`, siehe Kapitel 3). Zusätzlich schreibt `start.sh`
-selbst das rohe stdout/stderr jedes losgelösten Prozesses fest nach
-`full_app/logs/<kommando>.out` – dieser Pfad ist in `start.sh` fest
-verdrahtet und folgt **nicht** `logging.log_dir`; bei der Standard-
-`config.yaml` liegen `.log`- und `.out`-Dateien deshalb in zwei
-unterschiedlichen Verzeichnissen (`parser-data/logs/` bzw. `logs/`).
+selbst das rohe stdout/stderr jedes losgelösten Prozesses nach
+`logging.log_dir/<kommando>.out` – also direkt neben die jeweilige
+`.log`-Datei (`start.sh` liest `logging.log_dir` dafür aus der aktiven
+Konfiguration).
 Eine andere Konfigurationsdatei lässt sich mit
 `BTC_PARSER_CONFIG=/pfad/andere.yaml ./start.sh` verwenden.
 
@@ -207,7 +206,7 @@ Deinstallation: `sudo systemd/install.sh --uninstall`.
 Jede installierte Unit bringt mit:
 
 - eigenes Log pro Dienst (`journalctl -u btc-parser-<name>.service`
-  zusätzlich zu den Dateilogs unter `logs/`)
+  zusätzlich zu den Dateilogs unter `logging.log_dir`)
 - `Restart=on-failure` mit `RestartSec=30` – ein abgestürzter Prozess
   kommt automatisch wieder hoch, ohne bei einem harten Dauerfehler
   endlos im Sekundentakt neu zu starten (`StartLimitBurst=5` je

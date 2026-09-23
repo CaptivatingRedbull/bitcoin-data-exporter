@@ -31,8 +31,8 @@ parameters on the command line instead of from config.yaml:
 See btc_parser_app/api/price_gap_backfill.py for details.
 
 For always-on production use, don't invoke this directly - use ../start.sh,
-which also makes sure bitcoind is up first and runs both long-running
-commands detached in the background with logs under logging.log_dir.
+(or the systemd units in ../systemd/), which also make sure the three
+long-running commands run detached with logs under logging.log_dir.
 
 See full_app/README.md for details and full_app/config/config.yaml for
 every setting these commands read.

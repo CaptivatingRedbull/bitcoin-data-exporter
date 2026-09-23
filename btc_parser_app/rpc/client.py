@@ -1,7 +1,6 @@
 """Thin bitcoin-cli wrapper.
 
-Kept as a subprocess-over-bitcoin-cli client (matching rpc_parser_modified.py)
-rather than a direct JSON-RPC/HTTP client so it transparently picks up
+Kept as a subprocess-over-bitcoin-cli client rather than a direct JSON-RPC/HTTP client so it transparently picks up
 cookie-file auth, .bitcoin/bitcoin.conf, and any local `bitcoin-cli` alias
 the host already has configured - the exact same auth path the operator
 uses interactively. `rpc.extra_args` and `rpc.auth_args()` in config.yaml
@@ -96,10 +95,10 @@ def get_block_verbose(config: RpcConfig, block_hash: str, verbosity: int = 3) ->
 
 
 def get_block_header(config: RpcConfig, block_hash: str) -> dict[str, Any]:
-    """Header-only fetch (verbosity=1: no transaction bodies) - just the
-    handful of fields the reorg-aware ingest loop needs (time,
-    previousblockhash) without paying for a full verbosity=3 payload."""
-    raw = run_cli(config, ["getblock", block_hash, "1"])
+    """Header-only fetch (getblockheader, verbose) - just the handful of
+    fields the reorg-aware ingest loop needs (time, previousblockhash),
+    without the full txid list `getblock <hash> 1` would also return."""
+    raw = run_cli(config, ["getblockheader", block_hash])
     return json.loads(raw)
 
 

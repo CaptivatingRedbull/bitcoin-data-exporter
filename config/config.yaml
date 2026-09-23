@@ -21,7 +21,7 @@ logging:
   log_dir: "parser-data/logs"
 
 # -----------------------------------------------------------------------
-# mempool.space HTTP API fetcher ("api_ingest" in Script_plan.md)
+# mempool.space HTTP API fetcher ("api-poll" command)
 # -----------------------------------------------------------------------
 mempool_api:
   base_url: "https://mempool.space"
@@ -80,7 +80,7 @@ mining_pools_dataset:
 
 
 # -----------------------------------------------------------------------
-# bitcoin-cli / RPC block fetcher ("rpc_ingest" in Script_plan.md).
+# bitcoin-cli / RPC block fetcher ("rpc-ingest" command).
 #
 # There is exactly one RPC parsing implementation (btc_parser_app.rpc.ingest,
 # the `rpc-ingest` command) - no separate "backfill" vs "incremental" script.
@@ -141,8 +141,7 @@ rpc:
   # How many confirmations behind the node's tip `rpc-ingest` parses up to
   # (`latest = tip - reorg_confirmations`). Blocks this deep are extremely
   # unlikely to be reorged out, so this is the steady-state processing
-  # frontier. See the "RPC Parser Reorg Handling" section of
-  # Script_plan.md.
+  # frontier. See the "RPC Parser Reorg Handling" section of ../README.md.
   reorg_confirmations: 6
   # Safety cap on how many blocks `rpc-ingest` will walk backwards through
   # previousblockhash looking for a common ancestor during reorg recovery.

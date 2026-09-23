@@ -11,11 +11,8 @@ Gesteuert über `logging.level` (Standard `INFO`) und `logging.log_dir`
 Jedes Kommando loggt sowohl nach stdout als auch in eine rotierende Datei
 unter `log_dir/<kommando>.log` (20 MB pro Datei, 5 aufgehoben). Zusätzlich
 schreibt `start.sh` das rohe, unstrukturierte stdout/stderr jedes
-losgelösten Prozesses fest nach `full_app/logs/<kommando>.out` – dieser
-Pfad ist in `start.sh` selbst hart codiert und folgt **nicht**
-`log_dir` (siehe Kapitel 2.3), sodass bei der Standard-`config.yaml`
-`.log`- und `.out`-Dateien in zwei unterschiedlichen Verzeichnissen
-landen.
+losgelösten Prozesses nach `log_dir/<kommando>.out`, direkt neben die
+`.log`-Datei (siehe Kapitel 2.3).
 
 Format: `%(asctime)s %(levelname)-7s %(name)s: %(message)s`, Zeitstempel
 im Format `%Y-%m-%dT%H:%M:%S%z` (inklusive Zeitzonen-Offset des Hosts).
@@ -145,8 +142,8 @@ Für harte Dauerbetriebs-Anforderungen sind systemd-Units mit
    besorgen und in `prices.csv` einspielen, `api-poll` starten, und die
    verbleibende Lücke mit `backfill_price_gap.py` schließen (Kapitel 6.6).
 5. `./start.sh` ausführen.
-6. Logs unter `parser-data/logs/` (strukturiert) und `full_app/logs/`
-   (roh, `.out`) beobachten, insbesondere während der initialen
+6. Logs unter `parser-data/logs/` (strukturiert `.log`, roh `.out`)
+   beobachten, insbesondere während der initialen
    Genesis-Aufholjagd von `rpc-ingest` (kann je nach Node-Performance
    mehrere Stunden bis Tage dauern).
 7. Splunk-Inputs gemäß Kapitel 7.4 einrichten, sobald die ersten

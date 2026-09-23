@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 MAX_PART_BYTES = 900_000_000
 
 
-def _part_path(base_path: Path, part: int) -> Path:
+def part_path(base_path: Path, part: int) -> Path:
     """base_path with `part` spliced in: part 1 is base_path itself,
     part 2+ is `<stem>.NNNNNN<suffix>` (e.g. blocks.000002.csv)."""
     if part <= 1:
@@ -47,7 +47,8 @@ def _part_path(base_path: Path, part: int) -> Path:
     return base_path.with_name(f"{base_path.stem}.{part:06d}{base_path.suffix}")
 
 
-def _existing_part_numbers(base_path: Path) -> list[int]:
+def existing_part_numbers(base_path: Path) -> list[int]:
+    """Every part number currently on disk for base_path, ascending."""
     numbers = [1] if base_path.exists() else []
     parent = base_path.parent
     if not parent.is_dir():
@@ -62,35 +63,9 @@ def _existing_part_numbers(base_path: Path) -> list[int]:
     return sorted(numbers)
 
 
-def part_path(base_path: Path, part: int) -> Path:
-    """Public wrapper for _part_path - the on-disk path for a given part
-    number of a logical CSV (see rpc/part_writer.py, which needs this to
-    address specific parts by number rather than by disk-scanning)."""
-    return _part_path(base_path, part)
-
-
-def existing_part_numbers(base_path: Path) -> list[int]:
-    """Public wrapper for _existing_part_numbers - every part number
-    currently on disk for base_path (see rpc/part_writer.py and
-    rpc/reorg_state.py, which need this to merge parts split across two
-    directories - a state root and an export root)."""
-    return _existing_part_numbers(base_path)
-
-
-def highest_existing_part(base_path: Path) -> int:
-    """The highest part number currently on disk for base_path, or 0 if none
-    exists. Used only to seed a durable part-number counter the first time
-    it's created (see rpc/part_writer.py) - safe to call once for that, but
-    not fit to call repeatedly as a source of truth, since a downstream
-    consumer (e.g. a Splunk batch input) may delete older parts, which would
-    make later scans under-report and hand out already-used numbers again."""
-    numbers = _existing_part_numbers(base_path)
-    return numbers[-1] if numbers else 0
-
-
 def all_parts(base_path: Path) -> list[Path]:
     """Every existing on-disk part of a logical CSV, oldest (part 1) first."""
-    return [_part_path(base_path, n) for n in _existing_part_numbers(base_path)]
+    return [part_path(base_path, n) for n in existing_part_numbers(base_path)]
 
 
 def csv_parts_exist(base_path: Path) -> bool:
@@ -163,12 +138,12 @@ def write_single_row_csv(path: Path, row: dict[str, Any]) -> None:
 
 
 def _current_part_for_append(base_path: Path, max_part_bytes: int) -> Path:
-    numbers = _existing_part_numbers(base_path)
+    numbers = existing_part_numbers(base_path)
     if not numbers:
         return base_path
-    latest = _part_path(base_path, numbers[-1])
+    latest = part_path(base_path, numbers[-1])
     if latest.stat().st_size >= max_part_bytes:
-        return _part_path(base_path, numbers[-1] + 1)
+        return part_path(base_path, numbers[-1] + 1)
     return latest
 
 
@@ -191,13 +166,3 @@ def write_rows_to_csv(
     with open(target, mode="a", encoding="utf-8", newline="") as f:
         frame.write_csv(f, include_header=not file_exists)
 
-
-def flush_batch_to_disk(batch_data: dict[str, list[dict[str, Any]]], out_dir: Path) -> None:
-    """Append every buffered {csv_stem: rows} group to out_dir/<stem>.csv
-    (or its current rotated part), then clear each list in place so the
-    caller's buffer is ready to reuse."""
-    for key, records in batch_data.items():
-        if not records:
-            continue
-        write_rows_to_csv(records, out_dir / f"{key}.csv")
-        records.clear()

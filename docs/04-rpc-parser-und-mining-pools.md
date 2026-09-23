@@ -223,7 +223,7 @@ Verwendete RPC-Aufrufe:
 | `get_block_count` | `getblockcount` | Aktueller Node-Tip. |
 | `get_block_hash` | `getblockhash <height>` | Hash zu einer Höhe. |
 | `get_block_verbose` | `getblock <hash> 3` | Voller Block inkl. aller Transaktionen (verbosity=3). |
-| `get_block_header` | `getblock <hash> 1` | Nur Header-Felder (kein Transaktionskörper) – für `time`/`previousblockhash` in der Reorg-Logik. |
+| `get_block_header` | `getblockheader <hash>` | Nur Header-Felder (ohne die txid-Liste, die `getblock <hash> 1` mitliefern würde) – für `time`/`previousblockhash` in der Reorg-Logik. |
 | `get_block_header_raw` | `getblockheader <hash> false` | Rohe 80-Byte-Header-Bytes (hex), für die Stale-Blocks-Pipeline (Kapitel 5). |
 | `get_chain_tips` | `getchaintips` | Alle bekannten Chain-Tips, für die Stale-Blocks-Pipeline. |
 
@@ -448,7 +448,7 @@ Risiko lediglich verkleinern, nicht beseitigen.
 
 ## 4.13 Beendigung
 
-Ein installierter Signal-Handler (`_install_stop_signal()`) setzt bei
+Ein installierter Signal-Handler (`common/stop_signal.py::install_stop_signal()`) setzt bei
 `SIGTERM`/`SIGINT` nur ein `threading.Event`, das zwischen Blöcken und
 nach jedem Durchlauf geprüft wird – ein `kill`/Strg+C (oder `stop.sh`)
 landet dadurch immer auf einem sauberen `current.csv`-Checkpoint statt

@@ -12,7 +12,7 @@ Rolle zuzuordnen.
 | Datei | Rolle |
 |---|---|
 | `run.py` | Komfort-Einstiegspunkt: hängt `full_app/` an `sys.path` und ruft `btc_parser_app.cli.main()` auf, damit `python run.py <kommando>` von überall funktioniert, ohne `PYTHONPATH` setzen oder in `full_app/` wechseln zu müssen. |
-| `start.sh` | Produktionsnaher Start: prüft RPC-Erreichbarkeit, startet alle drei Dauerprozesse losgelöst im Hintergrund, PID-Tracking über `.pids/`. Schreibt rohe `.out`-Logs hart codiert nach `full_app/logs/`. Siehe Kapitel 2. |
+| `start.sh` | Produktionsnaher Start: prüft RPC-Erreichbarkeit, startet alle drei Dauerprozesse losgelöst im Hintergrund, PID-Tracking über `.pids/`. Schreibt rohe `.out`-Logs nach `logging.log_dir`. Siehe Kapitel 2. |
 | `stop.sh` | Stoppt, was `start.sh` gestartet hat (`SIGTERM`, nach 30 s `SIGKILL`). Siehe Kapitel 2. |
 | `lib.sh` | Von `start.sh`/`stop.sh` per `source` eingebundene Hilfsfunktion `pid_matches_component()` – verhindert, dass eine PID-Wiederverwendung nach einem Absturz fälschlich als "läuft noch" erkannt wird. |
 | `requirements.txt` | Python-Abhängigkeiten: `polars`, `requests`, `PyYAML`. |
@@ -22,7 +22,7 @@ Rolle zuzuordnen.
 | `config/pools-v2.json` | Mitgeliefertes Mining-Pool-Signaturdatenset (Snapshot von `mempool/mining-pools`, MIT-lizenziert). |
 | `config/XBTUSD_1.csv` / `config/XBTEUR_1.csv` | **Nicht mitgeliefert** – hier die Kraken-1-Minuten-OHLC-Exporte ablegen (siehe Kapitel 6). |
 
-Zur Laufzeit zusätzlich erzeugt (nicht im Repository): `logs/`, `.pids/`,
+Zur Laufzeit zusätzlich erzeugt (nicht im Repository): `.pids/`,
 `.venv/`, sowie das in Kapitel 7 beschriebene `parser-data/`-Verzeichnis
 mit seinen `state/`- und `export/`-Unterordnern.
 
@@ -38,9 +38,10 @@ mit seinen `state/`- und `export/`-Unterordnern.
 
 | Datei | Rolle |
 |---|---|
-| `csv_writer.py` | Gemeinsamer, größenrotierender Append-only-CSV-Writer (`write_rows_to_csv`, `flush_batch_to_disk`) sowie die Lesefunktionen für rotierte logische CSVs (`read_csv_parts`, `csv_parts_exist`, `all_parts`) und die Part-Adressierungs-Hilfsfunktionen (`part_path`, `existing_part_numbers`, `highest_existing_part`), die `rpc/part_writer.py` und `rpc/reorg_state.py` für die über zwei Verzeichnisse verteilten `blocks/`/`transactions/`-Parts benötigen. Siehe Kapitel 7.3. |
+| `csv_writer.py` | Gemeinsamer, größenrotierender Append-only-CSV-Writer (`write_rows_to_csv`) sowie die Lesefunktionen für rotierte logische CSVs (`read_csv_parts`, `csv_parts_exist`, `all_parts`) und die Part-Adressierungs-Hilfsfunktionen (`part_path`, `existing_part_numbers`), die `rpc/part_writer.py` und `rpc/reorg_state.py` für die über zwei Verzeichnisse verteilten `blocks/`/`transactions/`-Parts benötigen. Siehe Kapitel 7.3. |
 | `atomic_write.py` | `atomic_replace()` – schreibt eine neue Datei komplett an einen Temp-Pfad und ersetzt das Ziel per `os.replace()` (atomar auf POSIX), sodass ein Absturz mitten im Schreiben nie eine abgeschnittene Zustandsdatei hinterlässt. Verwendet von `current.csv`, `latest.csv`, `block_status.csv`, `registry.csv`, `pools-v2.json`, sowie von `part_writer.py`s atomarem Pro-Block-Schreibmodus. |
 | `logging_setup.py` | `configure_logging()` – richtet Konsolen- und (falls ein Komponentenname übergeben wird) rotierendes Datei-Logging ein (20 MB × 5 Dateien). Siehe Kapitel 9. |
+| `stop_signal.py` | `install_stop_signal()` – gemeinsamer `SIGTERM`/`SIGINT`-Handler für `rpc-ingest` und `stale-blocks-ingest`: setzt nur ein `threading.Event`, das die Schleifen zwischen Arbeitsschritten prüfen, sodass jeder Stopp auf einem sauberen Checkpoint landet. |
 | `block_header.py` | Rohe 80-Byte-Bitcoin-Blockheader (de)serialisieren und deren Hash validieren (`header_hash()`, `validate_header_hash()`, `parse_header()`). Verwendet ausschließlich von der Stale-Blocks-Pipeline. Siehe Kapitel 5.3. |
 
 ### `btc_parser_app/rpc/` – `bitcoin-cli`-Seite

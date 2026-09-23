@@ -100,7 +100,7 @@ class PartSequencer:
                 export_highest = max(existing_part_numbers(export_base), default=0)
                 # Genuinely fresh start: part_is_open=False with part 0 means
                 # the first write_batched()/write_atomic() call increments
-                # to part 1 (base_path itself, per _part_path's contract)
+                # to part 1 (base_path itself, per part_path's contract)
                 # before writing anything - seeding (1, True) here instead
                 # would make that first call treat part 1 as already open
                 # and skip straight to part 2, leaving part 1 never written.

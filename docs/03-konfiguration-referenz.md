@@ -26,10 +26,9 @@ funktionieren überall gleichermaßen.
 `log_dir` liegt standardmäßig unter demselben `parser-data/`-Wurzel-
 verzeichnis wie `state/` und `export/` (siehe 3.5/3.6) – rein zur
 gemeinsamen, leicht auffindbaren Ablage; Logs sind selbst weder
-Splunk-Export noch App-Zustand. **Wichtig:** `start.sh` schreibt das rohe
-stdout/stderr jedes Prozesses zusätzlich fest nach `full_app/logs/
-<kommando>.out` – dieser Pfad ist in `start.sh` hart codiert und folgt
-**nicht** `log_dir` (siehe Kapitel 2.3).
+Splunk-Export noch App-Zustand. `start.sh` schreibt das rohe
+stdout/stderr jedes Prozesses zusätzlich nach `log_dir/<kommando>.out`
+(siehe Kapitel 2.3).
 
 Siehe Kapitel 9 für Details zum Logging-Verhalten.
 

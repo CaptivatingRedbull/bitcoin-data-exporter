@@ -1,8 +1,8 @@
 """Turns a `getblock <hash> 3` payload into flat block/transaction/input/
 output event dicts ready for CSV export.
 
-Ported from rpc_parser_modified.py, with additions for the mining pool
-extractor (btc_parser_app.rpc.mining_pools):
+Includes the hooks for the mining pool extractor
+(btc_parser_app.rpc.mining_pools):
 
 - aggregate_transaction also returns the coinbase transaction's scriptSig
   hex and output addresses as a side channel (not exported to CSV - see
@@ -325,12 +325,12 @@ def aggregate_transaction(
             }
         )
 
-    input_value_sats = sum(input_values_sats) if input_values_sats else 0
-    output_value_sats = sum(output_values_sats) if output_values_sats else 0
+    input_value_sats = sum(input_values_sats)
+    output_value_sats = sum(output_values_sats)
 
-    # Not exported - only used below to pick fee_source, and by
-    # aggregate_block's input_value_known_txs filter (recomputed there from
-    # the exported prevout_value_known_count/vin_count/is_coinbase fields).
+    # Not exported - only used below to pick fee_source (aggregate_block
+    # recomputes the same check for input_value_complete_tx_count from the
+    # exported prevout_value_known_count/vin_count fields).
     prevout_values_complete = is_coinbase or prevout_value_known_count == len(vins)
 
     rpc_fee = tx.get("fee")
@@ -594,7 +594,7 @@ def aggregate_block(
         # Both are current-chain-state snapshots, not intrinsic properties of
         # the block, and go stale/misleading once written to a historical CSV
         # (confirmations balloons on backfill, nextblockhash can be wrong
-        # after a reorg). See Script_plan.md.
+        # after a reorg).
         "hash": block.get("hash"),
         "height": block.get("height"),
         "version": block.get("version"),

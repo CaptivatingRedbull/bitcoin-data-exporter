@@ -47,14 +47,12 @@ duplicate over ever silently losing an event.
 from __future__ import annotations
 
 import logging
-import signal
-import threading
 import time
 from pathlib import Path
-from typing import Any
 
 from btc_parser_app.common.block_header import parse_header, validate_header_hash
 from btc_parser_app.common.csv_writer import write_rows_to_csv
+from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, RpcConfig, StaleBlocksGithubConfig
 from btc_parser_app.rpc.client import (
     RpcCliError,
@@ -70,7 +68,7 @@ from btc_parser_app.rpc.stale_blocks_state import (
     UNUSABLE,
     StaleBlockEntry,
     StaleBlockRegistry,
-    _now_iso,
+    now_iso,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,18 +82,6 @@ _EMPTY_HEADER_FIELDS = {
     "bits": None,
     "nonce": None,
 }
-
-
-def _install_stop_signal() -> threading.Event:
-    stop = threading.Event()
-
-    def _handle(signum: int, _frame: Any) -> None:
-        logger.info("Received signal %d - stopping after the current pass...", signum)
-        stop.set()
-
-    signal.signal(signal.SIGTERM, _handle)
-    signal.signal(signal.SIGINT, _handle)
-    return stop
 
 
 # =============================================================================
@@ -114,7 +100,7 @@ def _export_header_event(out_dir: Path, entry: StaleBlockEntry) -> None:
     write_rows_to_csv(
         [
             {
-                "observed_at": _now_iso(),
+                "observed_at": now_iso(),
                 "height": entry.height,
                 "hash": entry.blockhash,
                 "status": entry.status,
@@ -282,7 +268,7 @@ def run_stale_blocks_ingest(config: AppConfig) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
 
     registry = StaleBlockRegistry(state_dir / "registry.csv")
-    stop = _install_stop_signal()
+    stop = install_stop_signal()
 
     last_github_pull = 0.0
 

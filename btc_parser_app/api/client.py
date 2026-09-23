@@ -1,10 +1,8 @@
 """Rate-limited HTTP GET client shared by every mempool.space caller.
 
-Generalizes the retry/429/timeout handling that mempool_api_parser.py and
-mempool_block_pool_history.py each implemented separately. Every request
-goes through a TokenBucket first, so the poller, the mining-pool-history
-backfill, and any other caller sharing one ApiClient instance all draw from
-the same requests-per-minute budget.
+Retry/429/timeout handling in one place. Every request goes through a
+TokenBucket first, so every caller sharing one ApiClient instance (e.g. the
+api-poll endpoint threads) draws from the same requests-per-minute budget.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class RateLimited(Exception):
     """Raised when the server returns HTTP 429. Never retried automatically -
-    callers are expected to stop the affected loop, per Script_plan.md."""
+    callers are expected to stop the affected loop."""
 
     def __init__(self, retry_after: str) -> None:
         self.retry_after = retry_after
