@@ -14,17 +14,14 @@ feldbezogene Indizierungskonzept siehe
 
 ```
 full_app/
-  logs/                          hartcodiertes Ziel für start.sh's rohe
-                                  *.out-Redirects (NICHT logging.log_dir)
-    rpc-ingest.out
-    stale-blocks-ingest.out
-    api-poll.out
   .pids/                         von start.sh verwaltete PID-Dateien
   parser-data/                   Wurzelverzeichnis für alles Laufzeitdaten-
                                   bezogene (Standard-config.yaml) - erst
                                   beim ersten Lauf angelegt
     logs/                        logging.log_dir - strukturierte, rotierende
-                                  <kommando>.log-Dateien, nicht für Splunk
+                                  <kommando>.log-Dateien plus start.sh's
+                                  rohe <kommando>.out-Redirects, nicht für
+                                  Splunk
     state/
       rpc/                       rpc.state_dir (NICHT für Splunk)
         current.csv
@@ -67,9 +64,7 @@ full_app/
 Auf dem Produktivhost liegt `parser-data/` komplett auf einem separaten,
 großen Datenvolume statt relativ zu `full_app/` (siehe
 `config/config.production.yaml` und Kapitel 2.5) – `logging.log_dir`
-eingeschlossen. Nur `full_app/logs/*.out` (die rohen stdout/stderr-
-Redirects von `start.sh`) bleiben davon unberührt, da dieser Pfad in
-`start.sh` selbst hart codiert ist (siehe Kapitel 2.3).
+(und damit auch die `.out`-Dateien von `start.sh`) eingeschlossen.
 
 ## 7.2 Alle erzeugten Dateien im Überblick
 
@@ -90,7 +85,7 @@ Redirects von `start.sh`) bleiben davon unberührt, da dieser Pfad in
 | `prices.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`, **nie löschen**) | Kapitel 6.4, 6.6 |
 | `pools-v2.json` | `mining_pools_dataset.local_path` | ganze Datei überschrieben | Nein (Konfigurationsdaten) | Kapitel 4.8 |
 | `<kommando>.log` | `logging.log_dir` | rotierend (20 MB × 5) | Nein (Betriebslog) | Kapitel 9 |
-| `<kommando>.out` | `full_app/logs/` (hart codiert) | rohes stdout/stderr | Nein (Betriebslog) | Kapitel 2 |
+| `<kommando>.out` | `logging.log_dir` | rohes stdout/stderr | Nein (Betriebslog) | Kapitel 2 |
 
 "Intern"/"Nein" markierte Dateien sind Zustands- bzw. Buchführungsdateien
 der Anwendung selbst – sie in Splunk zu indizieren bringt keinen
@@ -213,9 +208,6 @@ UTC:
   `_time` extrahiert werden sollte, damit sich auch die Detail-Event-Typen
   per Zeitraum eingrenzen lassen, ohne über `txid`/`block_hash` gegen
   `transactions.csv`/`blocks.csv` joinen zu müssen.
-- Jede mempool.space-Endpunkt-CSV außer `prices.csv`: `polled_at_unix`
-  ist Unix-Epoch (UTC), vom Poller selbst zum Zeitpunkt der Antwort
-  erzeugt.
 - `prices.csv`: `date_unix` ist der Zeitstempel, den der Preis selbst
   trägt (bei Live-Polls) bzw. die Minute des Kraken-Kerzen-Exports (beim
   Import) – nicht der Abrufzeitpunkt.

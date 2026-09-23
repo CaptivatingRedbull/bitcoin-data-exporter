@@ -1,8 +1,7 @@
 """Threaded interval poller for the mempool.space endpoints in config.yaml.
 
-Ported from mempool_api_parser.py, generalized to build its endpoint list
-and rate limit from AppConfig instead of module-level constants. One thread
-per endpoint, each on its own interval; a 429 on any endpoint sets a shared
+Builds its endpoint list and rate limit from AppConfig. One thread per
+endpoint, each on its own interval; a 429 on any endpoint sets a shared
 stop_event so every other endpoint's thread wakes and halts immediately
 instead of finishing out its current sleep.
 """
@@ -17,7 +16,7 @@ from pathlib import Path
 import requests
 
 from btc_parser_app.api.client import ApiClient, FetchError, RateLimited, handle_rate_limited
-from btc_parser_app.api.mempool_endpoints import PARSER_REGISTRY, PolledAt
+from btc_parser_app.api.mempool_endpoints import PARSER_REGISTRY
 from btc_parser_app.api.rate_limiter import TokenBucket
 from btc_parser_app.common.csv_writer import write_rows_to_csv
 from btc_parser_app.config import EndpointConfig, MempoolApiConfig
@@ -36,9 +35,8 @@ EXIT_RATE_LIMITED = 75
 def compute_start_offsets(endpoints: tuple[EndpointConfig, ...]) -> dict[str, float]:
     """Endpoints sharing the same interval get their request *starts* spread
     evenly across that interval (e.g. 4 endpoints on a 60s interval start
-    15s apart). Endpoints on their own interval (like the 24h mining pool
-    poll) just start near the top of the run - there's nothing to stagger
-    against at that timescale."""
+    15s apart). An endpoint alone on its interval just starts at the top of
+    the run - there's nothing to stagger it against."""
     by_interval: dict[float, list[EndpointConfig]] = {}
     for endpoint in endpoints:
         by_interval.setdefault(endpoint.interval_seconds, []).append(endpoint)
@@ -81,21 +79,18 @@ def fetch_and_write(
         logger.warning("[%s] %s", endpoint.name, exc)
         return
 
-    polled_at = PolledAt.now()
     try:
-        rows = parser(data, polled_at)
+        rows = parser(data)
     except Exception as exc:  # noqa: BLE001 - keep the poller alive on bad payloads
         logger.warning("[%s] failed to parse response: %s", endpoint.name, exc)
         return
 
     write_rows_to_csv(rows, out_dir / f"{endpoint.name}.csv")
-    # DEBUG, not INFO: this fires once per endpoint per interval_seconds (5
-    # endpoints => a steady trickle of lines that drowns out the
-    # actually-interesting INFO lines - startup summary, warnings, a 429).
-    # Set logging.level: DEBUG in config.yaml to see these again.
-    logger.debug(
-        "[%s] wrote %d row(s) @ %s", endpoint.name, len(rows), polled_at.utc_iso
-    )
+    # DEBUG, not INFO: this fires once per endpoint per interval_seconds - a
+    # steady trickle of lines that drowns out the actually-interesting INFO
+    # lines (startup summary, warnings, a 429). Set logging.level: DEBUG in
+    # config.yaml to see these again.
+    logger.debug("[%s] wrote %d row(s)", endpoint.name, len(rows))
 
 
 def endpoint_loop(

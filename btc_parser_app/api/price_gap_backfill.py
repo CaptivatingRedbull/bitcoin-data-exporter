@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import logging.handlers
 import sys
 import time
 from pathlib import Path
@@ -48,6 +47,7 @@ from typing import Any
 import requests
 
 from btc_parser_app.api.client import FetchError, RateLimited
+from btc_parser_app.api.poller import EXIT_RATE_LIMITED
 from btc_parser_app.common.csv_writer import (
     csv_parts_exist,
     read_csv_parts,
@@ -55,19 +55,17 @@ from btc_parser_app.common.csv_writer import (
     write_rows_to_csv,
     write_single_row_csv,
 )
+from btc_parser_app.common.logging_setup import configure_logging
+from btc_parser_app.config import LoggingConfig
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://mempool.space"
-DEFAULT_CURRENCY = "EUR"  # see module docstring on currency= - EUR responses
-# have included both EUR and USD in practice, USD-only requests have not.
+# EUR responses have included both EUR and USD in practice, USD-only
+# requests have not.
+DEFAULT_CURRENCY = "EUR"
 DEFAULT_RATE_LIMIT_PER_MINUTE = 10.0
 STEP_SECONDS = 60  # matches prices.csv's one-row-per-minute schema
-
-# Mirrors api/poller.py::EXIT_RATE_LIMITED - same sysexits.h EX_TEMPFAIL
-# rationale: distinguishable from a generic crash (exit 1) if this is ever
-# wrapped by something that restarts on failure.
-EXIT_RATE_LIMITED = 75
 
 
 def _prices_path(export_dir: Path) -> Path:
@@ -247,21 +245,6 @@ def run_backfill(
     return 0
 
 
-def _configure_logging(export_dir: Path) -> None:
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z"
-    )
-    export_dir.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.handlers.RotatingFileHandler(
-        export_dir / "price_gap_backfill.log", maxBytes=20 * 1024 * 1024, backupCount=5,
-        encoding="utf-8",
-    )
-    handlers: list[logging.Handler] = [logging.StreamHandler(), file_handler]
-    for handler in handlers:
-        handler.setFormatter(formatter)
-    logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backfill_price_gap.py",
@@ -298,7 +281,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    _configure_logging(args.export_dir)
+    configure_logging(
+        LoggingConfig(level="INFO", log_dir=args.export_dir), component="price_gap_backfill"
+    )
 
     if args.rate_limit_per_minute <= 0:
         print("--rate-limit-per-minute must be > 0", file=sys.stderr)

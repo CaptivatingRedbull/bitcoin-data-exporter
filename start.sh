@@ -2,7 +2,7 @@
 # Production-style startup for btc_parser_app: checks the Bitcoin node is
 # already reachable, then launches the three long-running services
 # (rpc-ingest, stale-blocks-ingest, api-poll) detached in the background,
-# logging to logs/.
+# logging to the config's logging.log_dir.
 #
 # This script NEVER starts a bitcoind of its own, local or otherwise - it
 # only checks reachability and fails with a clear message if the node
@@ -33,14 +33,24 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 RUN_PY="$SCRIPT_DIR/run.py"
-LOG_DIR="$SCRIPT_DIR/logs"
 PID_DIR="$SCRIPT_DIR/.pids"
-mkdir -p "$LOG_DIR" "$PID_DIR"
 
 CONFIG_ARGS=()
 if [[ -n "${BTC_PARSER_CONFIG:-}" ]]; then
   CONFIG_ARGS=(--config "$BTC_PARSER_CONFIG")
 fi
+
+# Raw stdout/stderr (*.out) goes next to each service's own rotating *.log,
+# in the config's logging.log_dir - not a separate hardcoded directory.
+if ! LOG_DIR="$("$PYTHON" -c '
+import sys
+from btc_parser_app.config import load_config
+print(load_config(sys.argv[1] if len(sys.argv) > 1 else None).logging.log_dir)
+' ${BTC_PARSER_CONFIG:+"$BTC_PARSER_CONFIG"})"; then
+  echo "Could not load the config to resolve logging.log_dir - fix it and re-run." >&2
+  exit 1
+fi
+mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"

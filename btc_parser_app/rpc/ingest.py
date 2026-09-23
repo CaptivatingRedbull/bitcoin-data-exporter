@@ -1,7 +1,6 @@
 """The one and only RPC block parser - implements both "catch up" and
-"steady-state tip-following" from Script_plan.md's rpc_ingest design,
-including the "RPC Parser Reorg Handling" section, as a single long-running
-process (meant to be started once - see ../start.sh - and left running).
+"steady-state tip-following", including reorg handling, as a single
+long-running process (meant to be started once - see ../start.sh - and left running).
 
 There is no separate "backfill" mode: `run_rpc_ingest` behaves identically
 regardless of how many blocks are already parsed.
@@ -48,16 +47,14 @@ Loop, per pass:
    wherever it has an entry.
 
 See btc_parser_app.rpc.reorg_state for the state files this reads/writes,
-rpc/part_writer.py for how state_dir/output_dir's blocks/transactions parts
-are written and handed off, and Script_plan.md for the full design this
-implements.
+and rpc/part_writer.py for how state_dir/output_dir's blocks/transactions
+parts are written and handed off.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import signal
 import threading
 import time
 from decimal import Decimal
@@ -65,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from btc_parser_app.api.mining_pools_dataset import refresh_if_stale
+from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, RpcConfig
 from btc_parser_app.rpc.block_parser import aggregate_block
 from btc_parser_app.rpc.client import (
@@ -87,22 +85,6 @@ from btc_parser_app.rpc.reorg_state import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _install_stop_signal() -> threading.Event:
-    """SIGTERM/SIGINT set this event instead of killing the process
-    mid-batch - the follow loop checks it between blocks and after each
-    pass, so a `kill`/Ctrl-C (or stop.sh) always lands on a clean
-    current.csv checkpoint."""
-    stop = threading.Event()
-
-    def _handle(signum: int, _frame: Any) -> None:
-        logger.info("Received signal %d - stopping after the current batch...", signum)
-        stop.set()
-
-    signal.signal(signal.SIGTERM, _handle)
-    signal.signal(signal.SIGINT, _handle)
-    return stop
 
 
 def _process_height(
@@ -465,7 +447,7 @@ def run_rpc_ingest(config: AppConfig) -> None:
     }
 
     pool_matcher = load_pool_matcher(config.mining_pools_dataset.local_path)
-    stop = _install_stop_signal()
+    stop = install_stop_signal()
 
     logger.info("rpc-ingest starting - output_dir=%s state_dir=%s", out_dir, state_dir)
 

@@ -1,5 +1,4 @@
-"""State files backing the reorg-aware RPC ingest loop (btc_parser_app.rpc.ingest),
-implementing the "RPC Parser Reorg Handling" section of Script_plan.md:
+"""State files backing the reorg-aware RPC ingest loop (btc_parser_app.rpc.ingest):
 
 - index/index.csv    - immutable, append-only record of every block ever
                         exported: height,blockhash,previousblockhash. A

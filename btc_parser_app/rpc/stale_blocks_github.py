@@ -34,7 +34,7 @@ from btc_parser_app.config import StaleBlocksGithubConfig
 logger = logging.getLogger(__name__)
 
 _HEADERS = {
-    "Accept": "application/vnd.github+json",
+    "Accept": "text/csv, text/plain",
     "User-Agent": "btc_parser_app-stale-blocks",
 }
 

@@ -2,8 +2,7 @@
 
 This is what actually enforces `mempool_api.rate_limit` from config.yaml. A
 single TokenBucket instance is shared by every caller hitting the same host
-budget (the endpoint poller threads and the mining-pool-history paginator),
-so the configured requests-per-minute is a budget for the whole app against
+budget (the api-poll endpoint threads), so the configured requests-per-minute is a budget for the whole app against
 that host, not a per-caller allowance.
 """
 
