@@ -142,6 +142,13 @@ install_template() {
   echo "  wrote $UNIT_DIR/$dest"
 }
 
+# Units with no installed copy yet - on a re-install into an already-active
+# target, `systemctl start btc-parser.target` alone won't bring these up.
+NEW_UNITS=()
+for unit in "${UNITS[@]}"; do
+  [[ -f "$UNIT_DIR/$unit.service" ]] || NEW_UNITS+=("$unit")
+done
+
 install_template "btc-parser.target.template" "btc-parser.target"
 for unit in "${UNITS[@]}"; do
   install_template "$unit.service.template" "$unit.service"
@@ -156,10 +163,10 @@ systemctl enable btc-parser.target
 
 if [[ "$START_UNITS" -eq 1 ]]; then
   systemctl start btc-parser.target
-  # Also start each unit explicitly: on a re-install that adds a new unit
-  # (e.g. mempool-watch) to an already-active target, this is what brings
-  # the new one up. A no-op for units that are already running.
-  for unit in "${UNITS[@]}"; do
+  # Also start each newly added unit (e.g. mempool-watch) explicitly - see
+  # NEW_UNITS above. Only the new ones: an existing unit that's stopped is
+  # stopped on purpose (e.g. api-poll after an HTTP 429) and must stay so.
+  for unit in "${NEW_UNITS[@]}"; do
     systemctl start "$unit.service"
   done
   echo ""

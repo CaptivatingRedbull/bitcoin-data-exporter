@@ -61,6 +61,7 @@ from typing import Any, Iterable
 from btc_parser_app.common.csv_writer import write_rows_to_csv
 from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, MempoolWatchConfig, RpcConfig
+from btc_parser_app.rpc.block_parser import btc_to_sats
 from btc_parser_app.rpc.client import (
     RpcCliError,
     RpcError,
@@ -113,7 +114,6 @@ EVENT_COLUMNS = (
     "source",
     "detail",
 )
-SATS_PER_BTC = Decimal(100_000_000)
 MIN_PREVOUT_NODE_VERSION = 250000  # Bitcoin Core 25.0 - getrawtransaction verbosity 2
 RPC_ERROR_BACKOFF_SECONDS = 30
 # Reconcile fetches in chunks this size so SIGTERM during a long startup
@@ -125,12 +125,6 @@ def _btc_str(value: Any) -> str | None:
     if value is None:
         return None
     return format(Decimal(str(value)), "f")
-
-
-def _sats(value: Any) -> int | None:
-    if value is None:
-        return None
-    return int(Decimal(str(value)) * SATS_PER_BTC)
 
 
 # =============================================================================
@@ -156,6 +150,15 @@ def _prevout(rpc: RpcConfig, vin: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def _script_address(script_pub_key: dict[str, Any]) -> str | None:
+    """`address` on Core 22+; older nodes only have an `addresses` list
+    (a single entry for every standard single-address script)."""
+    if "address" in script_pub_key:
+        return script_pub_key["address"]
+    addresses = script_pub_key.get("addresses") or []
+    return addresses[0] if len(addresses) == 1 else None
+
+
 def match_tx(rpc: RpcConfig, sanctions: SanctionsList, tx: dict[str, Any]) -> list[dict[str, Any]]:
     """One dict per input/output of `tx` whose address is on the list."""
     matches: list[dict[str, Any]] = []
@@ -166,13 +169,13 @@ def match_tx(rpc: RpcConfig, sanctions: SanctionsList, tx: dict[str, Any]) -> li
         prevout = _prevout(rpc, vin)
         if prevout is None:
             continue
-        address = prevout.get("scriptPubKey", {}).get("address")
+        address = _script_address(prevout.get("scriptPubKey", {}))
         entry = sanctions.lookup(address)
         if entry is not None:
             matches.append(_match_row("input", index, address, prevout.get("value"), entry))
 
     for vout in tx.get("vout", []):
-        address = vout.get("scriptPubKey", {}).get("address")
+        address = _script_address(vout.get("scriptPubKey", {}))
         entry = sanctions.lookup(address)
         if entry is not None:
             matches.append(_match_row("output", int(vout["n"]), address, vout.get("value"), entry))
@@ -185,7 +188,7 @@ def _match_row(direction: str, index: int, address: str, value: Any, entry: Any)
         "direction": direction,
         "io_index": index,
         "address": address,
-        "value_sats": _sats(value),
+        "value_sats": btc_to_sats(value),
         "value_btc": _btc_str(value),
         "name": entry.name,
         "first_name": entry.first_name,
@@ -252,13 +255,20 @@ class MempoolWatcher:
         # txids currently in the mempool that have already been checked
         # (clean or flagged) - in memory only, see module docstring.
         self.checked: set[str] = set()
+        # txids from ZMQ `A` events that were already gone again by the time
+        # they were fetched. If one of them was mined, the C event for its
+        # block re-fetches it by blockhash (see _on_block_connected) - without
+        # -txindex that's the only way to still check it.
+        self.unfetched: set[str] = set()
         self.tip_height = 0
 
     # --- fetching -----------------------------------------------------------
 
-    def _fetch_and_match(self, txid: str) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    def _fetch_and_match(
+        self, txid: str, blockhash: str | None = None
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
         try:
-            tx = get_raw_transaction(self.rpc, txid)
+            tx = get_raw_transaction(self.rpc, txid, blockhash)
         except RpcError:
             return None  # already left the mempool again - nothing to check
         return tx, match_tx(self.rpc, self.sanctions, tx)
@@ -328,6 +338,9 @@ class MempoolWatcher:
         height, _confirmations, txids = get_block_txids(self.rpc, block_hash)
         self.tip_height = max(self.tip_height, height)
         in_block = set(txids)
+        for txid in self.unfetched & in_block:
+            self._on_added(txid, self._fetch_and_match(txid, block_hash), source="zmq")
+        self.unfetched -= in_block
         self.checked -= in_block
         for entry in self.store.all():
             if entry.status == IN_MEMPOOL and entry.txid in in_block:
@@ -366,9 +379,14 @@ class MempoolWatcher:
 
         for event in events:
             if event.label == "A":
-                if event.hash_hex in fetched:
-                    self._on_added(event.hash_hex, fetched.pop(event.hash_hex), source="zmq")
+                if event.hash_hex not in fetched:
+                    continue
+                if fetched[event.hash_hex] is None:
+                    self.unfetched.add(event.hash_hex)
+                else:
+                    self._on_added(event.hash_hex, fetched[event.hash_hex], source="zmq")
             elif event.label == "R":
+                self.unfetched.discard(event.hash_hex)
                 self._on_removed(event.hash_hex)
             elif event.label == "C":
                 self._on_block_connected(event.hash_hex)
@@ -392,8 +410,11 @@ class MempoolWatcher:
     def reconcile(self, source: str) -> None:
         """Full getrawmempool diff - see module docstring."""
         started = time.monotonic()
-        self.tip_height = get_block_count(self.rpc)
+        # Mempool first, tip second: a tracked tx missing from the snapshot
+        # was then mined (if at all) at or below the tip read afterwards, so
+        # _find_confirming_block's scan always covers it.
         mempool = set(get_raw_mempool_txids(self.rpc))
+        self.tip_height = get_block_count(self.rpc)
 
         new = list(mempool - self.checked)
         self.checked &= mempool

@@ -51,6 +51,7 @@ every setting these commands read.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import signal
 import sys
@@ -137,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
             matches = check_single_tx(config, args.txid, args.blockhash)
         except RpcCliError as exc:
             print(f"Could not fetch {args.txid}: {exc}", file=sys.stderr)
+            return 1
+        except (OSError, ValueError, csv.Error) as exc:
+            print(f"Could not load the sanctions list: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(matches, indent=2))
         print(f"{len(matches)} sanctioned input/output match(es).", file=sys.stderr)

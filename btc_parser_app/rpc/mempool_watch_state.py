@@ -37,7 +37,7 @@ class FlaggedTx:
     # [[prev_txid, prev_vout], ...] - kept so a later removal can be told
     # apart as an RBF replacement (gettxspendingprevout on these).
     inputs: list[list[Any]]
-    # One dict per matched input/output - see mempool_watch._match_rows().
+    # One dict per matched input/output - see mempool_watch.match_tx().
     matches: list[dict[str, Any]]
     status: str = IN_MEMPOOL
     block_hash: str | None = None
