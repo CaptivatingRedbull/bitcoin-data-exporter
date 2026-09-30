@@ -110,3 +110,23 @@ stale_blocks:
   github:
     csv_url: "https://raw.githubusercontent.com/bitcoin-data/stale-blocks/master/stale-blocks.csv"
     poll_interval_seconds: 86400
+
+# -----------------------------------------------------------------------
+# Sanctioned-address mempool watcher - see config.yaml's comments for
+# what each key does. zmq_endpoint points at the bitcoin-core pod
+# (same pod IP as rpc.extra_args above - repoint both together if it
+# changes) and needs `zmqpubsequence=tcp://0.0.0.0:28332` in that node's
+# bitcoin.conf (0.0.0.0 rather than the pod IP, which changes on
+# reschedule) plus port 28332 reachable from this pod - ZMQ has no auth,
+# so restrict it via NetworkPolicy to this pod only.
+# -----------------------------------------------------------------------
+mempool_watch:
+  zmq_endpoint: "tcp://10.42.5.56:28332"
+  sanctions_list_paths:
+    - "config/sanctioned_addresses.csv"
+  output_dir: "/parser-data/export/mempool_watch"
+  state_dir: "/parser-data/state/mempool_watch"
+  reconcile_interval_seconds: 300
+  rpc_workers: 4
+  forget_after_confirmations: 6
+  max_confirmation_scan_blocks: 50

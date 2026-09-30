@@ -9,6 +9,12 @@
 - `bitcoin-cli` muss im `PATH` liegen und den eigenen Node erreichen
   können – entweder lokal konfiguriert (`bitcoin.conf`/Cookie-Datei) oder
   über `rpc.extra_args` gegen einen entfernten Node (siehe Kapitel 3).
+- Für `mempool-watch`: Bitcoin Core **25+** (liefert in
+  `getrawtransaction <txid> 2` die Adresse jedes ausgegebenen Outputs mit;
+  ältere Versionen funktionieren über einen langsameren Fallback) und
+  `zmqpubsequence=…` in der `bitcoin.conf` des Nodes, erreichbar vom
+  Parser-Host aus (siehe Kapitel 11.2). Ohne ZMQ läuft `mempool-watch` im
+  reinen Polling-Modus.
 - Netzwerkzugriff auf `mempool.space` (HTTPS) für `api-poll` sowie für
   `backfill_price_gap.py`, und auf `raw.githubusercontent.com` für die
   Mining-Pool- und Stale-Blocks-Datensets (siehe Kapitel 6.6).
@@ -22,7 +28,13 @@ python3 -m venv .venv
 ```
 
 Abhängigkeiten (`requirements.txt`): `polars` (CSV-/DataFrame-Verarbeitung),
-`requests` (HTTP-Client), `PyYAML` (Konfigurationsdatei-Parsing).
+`requests` (HTTP-Client), `PyYAML` (Konfigurationsdatei-Parsing), `pyzmq`
+(ZMQ-Abonnement für `mempool-watch`).
+
+> **Bestehende Installation aktualisieren:** Nach einem `git pull`, der
+> `requirements.txt` ändert (z. B. `pyzmq` für `mempool-watch`), die venv
+> mit `.venv/bin/pip install -r requirements.txt` nachziehen –
+> `systemd/install.sh` bricht sonst mit einem entsprechenden Hinweis ab.
 
 > **Hinweis zu `rpc.output_dir`/`rpc.state_dir`:** Die Standardwerte
 > (`parser-data/export/rpc` und `parser-data/state/rpc`) werden relativ zu
@@ -36,7 +48,7 @@ Abhängigkeiten (`requirements.txt`): `polars` (CSV-/DataFrame-Verarbeitung),
 ## 2.3 Betrieb über start.sh / stop.sh
 
 ```sh
-./start.sh   # prüft, ob der Node bereits erreichbar ist, startet dann alle drei Dienste im Hintergrund
+./start.sh   # prüft, ob der Node bereits erreichbar ist, startet dann alle vier Dienste im Hintergrund
 ./stop.sh    # stoppt sie (SIGTERM, nach 30s Gnadenfrist SIGKILL)
 ```
 
@@ -50,7 +62,8 @@ Abhängigkeiten (`requirements.txt`): `polars` (CSV-/DataFrame-Verarbeitung),
    klaren Fehlermeldung ab, statt über den Node-Lebenszyklus zu raten –
    den Node muss man selbst starten/reparieren und `start.sh` danach
    erneut ausführen.
-2. Startet `rpc-ingest`, `stale-blocks-ingest` und `api-poll` losgelöst
+2. Startet `rpc-ingest`, `stale-blocks-ingest`, `api-poll` und
+   `mempool-watch` losgelöst
    (`nohup`, nichts hängt am Terminal). Jeder Prozess wird per PID-Datei
    unter `.pids/<kommando>.pid` nachverfolgt.
 3. Erneutes Ausführen von `start.sh` ist gefahrlos: Vor dem Start prüft
@@ -61,7 +74,7 @@ Abhängigkeiten (`requirements.txt`): `polars` (CSV-/DataFrame-Verarbeitung),
    PID-Wiederverwendung ungültig gewordene PID-Datei wird verworfen und
    der Dienst neu gestartet.
 
-Alle drei Kommandos loggen strukturiert nach
+Alle vier Kommandos loggen strukturiert nach
 `logging.log_dir/<kommando>.log` (rotierend, 20 MB × 5 Dateien – Standard
 `parser-data/logs`, siehe Kapitel 3). Zusätzlich schreibt `start.sh`
 selbst das rohe stdout/stderr jedes losgelösten Prozesses nach
@@ -73,12 +86,12 @@ Eine andere Konfigurationsdatei lässt sich mit
 
 ### stop.sh im Detail
 
-Sendet `SIGTERM` an alle drei per PID-Datei bekannten Prozesse, wartet
+Sendet `SIGTERM` an alle vier per PID-Datei bekannten Prozesse, wartet
 bis zu 30 Sekunden auf ein sauberes Beenden und sendet danach `SIGKILL`,
 falls ein Prozess noch läuft.
 
-- `rpc-ingest` und `stale-blocks-ingest` beenden ihren aktuellen
-  Batch/Durchlauf sauber und schreiben ihren Checkpoint, bevor sie sich
+- `rpc-ingest`, `stale-blocks-ingest` und `mempool-watch` beenden ihren
+  aktuellen Batch/Durchlauf sauber und schreiben ihren Checkpoint, bevor sie sich
   beenden (siehe Kapitel 4 und 5 – ein installierter Signal-Handler setzt
   nur ein `threading.Event`, das die Verarbeitungsschleife zwischen
   Blöcken/Durchläufen prüft).
@@ -115,6 +128,15 @@ python run.py stale-blocks-ingest
 # Preise im 60s-Takt, Difficulty-Adjustment, 24h-Pool-Hashrate-Anteil).
 # Läuft bis Strg+C/SIGTERM oder einem 429.
 python run.py api-poll
+
+# Mempool-Überwachung auf Sanktionsadressen (ZMQ sequence + periodischer
+# getrawmempool-Abgleich) - siehe Kapitel 11. Läuft dauerhaft bis
+# SIGTERM/SIGINT.
+python run.py mempool-watch
+
+# Eine einzelne Transaktion gegen die Sanktionsliste prüfen, ohne etwas zu
+# schreiben (bestätigte Tx ohne -txindex: --blockhash angeben).
+python run.py mempool-watch-check <txid> [--blockhash <hash>]
 
 # config/pools-v2.json von GitHub aktualisieren (normalerweise automatisch
 # durch rpc-ingest erledigt - siehe Kapitel 4)
@@ -187,8 +209,8 @@ in dieser Dokumentation.
 
 Für einen produktiven Linux-Host (getestet auf SUSE Linux Enterprise
 Server 15) liegen unter [`systemd/`](../systemd/) fertige Unit-Templates
-für die drei Dauerlauf-Kommandos plus ein `btc-parser.target`, das alle
-drei gruppiert. Installiert werden sie mit:
+für die vier Dauerlauf-Kommandos plus ein `btc-parser.target`, das alle
+vier gruppiert. Installiert werden sie mit:
 
 ```sh
 sudo systemd/install.sh                          # config/config.yaml
@@ -196,12 +218,21 @@ sudo systemd/install.sh --config config/config.production.yaml
 ```
 
 Das Skript ermittelt `APP_DIR` selbst (das Verzeichnis, in dem es liegt),
-prüft, dass die venv existiert, verweigert die Installation, falls
+prüft, dass die venv existiert und alle Pakete aus `requirements.txt`
+enthält, verweigert die Installation, falls
 `start.sh` dieselben Prozesse gerade schon per PID-Datei trackt (sonst
 liefen zwei Kopien gegeneinander auf denselben Output-/State-Dateien),
-schreibt die drei `.service`-Dateien plus das Target nach
+schreibt die vier `.service`-Dateien plus das Target nach
 `/etc/systemd/system/`, aktiviert sie (`systemctl enable`) und startet sie.
 Deinstallation: `sudo systemd/install.sh --uninstall`.
+
+Auf einem Host, auf dem die Units schon installiert sind, genügt zum
+Nachrüsten eines neuen Dienstes (z. B. `mempool-watch`) nach dem
+`git pull` + `pip install -r requirements.txt` ein erneutes
+`sudo systemd/install.sh` (mit derselben `--config`-Angabe bzw. ohne,
+dann bleibt `systemd/env` erhalten): Es schreibt die neue Unit, aktiviert
+sie und startet jede Unit einzeln – bereits laufende Dienste bleiben
+unberührt.
 
 Jede installierte Unit bringt mit:
 
@@ -212,10 +243,10 @@ Jede installierte Unit bringt mit:
   endlos im Sekundentakt neu zu starten (`StartLimitBurst=5` je
   `StartLimitIntervalSec=600`)
 - sauberes Stop-Signal: `KillSignal=SIGTERM` (Standard) genügt, da alle
-  drei Kommandos `SIGTERM` bereits sauber behandeln
+  vier Kommandos `SIGTERM` bereits sauber behandeln
 - `WantedBy=btc-parser.target` (`btc-parser.target` selbst ist
   `WantedBy=multi-user.target`) – nach einem Reboot (z. B. dem
-  wöchentlichen Wartungs-Reboot dieses Hosts) starten alle drei Dienste
+  wöchentlichen Wartungs-Reboot dieses Hosts) starten alle vier Dienste
   automatisch neu, unabhängig davon, wie/warum sie zuvor gestoppt wurden
 
 **Sonderfall `api-poll` und HTTP-429:** `api-poll` hält bei einem 429
@@ -231,7 +262,7 @@ installierte Unit nutzt genau das über `RestartPreventExitStatus=75`:
 | HTTP 429 | 75 | **kein** automatischer Neustart – Unit bleibt `inactive (dead)` (nicht `failed`), bis manuell `systemctl start btc-parser-api-poll.service` ausgeführt wird oder der Host neu bootet |
 
 Damit hämmert ein 429 nicht sofort wieder gegen mempool.space, während
-der wöchentliche Reboot trotzdem zuverlässig alle drei Dienste
+der wöchentliche Reboot trotzdem zuverlässig alle vier Dienste
 zurückbringt – siehe die Kommentare in
 [`systemd/btc-parser-api-poll.service.template`](../systemd/btc-parser-api-poll.service.template)
 für die volle Herleitung.
@@ -248,6 +279,8 @@ systemd-Units gegen dieselbe Konfiguration laufen (s. o., PID-Check in
 | `rpc-ingest` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 4 |
 | `stale-blocks-ingest` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 5 |
 | `api-poll` | dauerhaft | `SIGTERM`/`SIGINT`/HTTP 429 | 0 (sauberer Stop) / 75 (429) | Siehe Kapitel 6 |
+| `mempool-watch` | dauerhaft | `SIGTERM`/`SIGINT` | 0 | Siehe Kapitel 11 |
+| `mempool-watch-check TXID [--blockhash H]` | einmalig | selbst | 0 / 1 (Tx nicht abrufbar) | Siehe Kapitel 11.8 |
 | `update-pools-dataset` | einmalig | selbst | 0 / 1 (Fehler) | Siehe Kapitel 4 |
 
 Ein Konfigurationsfehler (fehlender/ungültiger Wert in `config.yaml`,

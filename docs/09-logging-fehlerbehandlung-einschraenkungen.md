@@ -28,6 +28,12 @@ Hochfrequente Einzelzeilen-Logs loggen bewusst auf `DEBUG`, nicht `INFO`:
 - Der "skipping refresh"-Hinweis bei jedem No-op-Check des
   Mining-Pool-Datenset-Refreshs.
 
+Umgekehrt loggt `mempool-watch` jedes `seen`-Ereignis (eine neue
+Transaktion mit Sanktionsadresse im Mempool) bewusst auf `WARNING` mit
+Adresse, Name und Sanktionsprogramm – im Journal/Logfile also sofort
+sichtbar, auch ohne Splunk. Die Folge-Ereignisse (`confirmed`,
+`replaced`, …) loggen auf `INFO`.
+
 `logging.level: DEBUG` in `config.yaml` setzen, falls dieses
 Detailniveau gebraucht wird. Das Standardlevel `INFO` liefert weiterhin
 Start-Zusammenfassungen, Warnungen, Batch-Fortschrittszeilen und alles,
@@ -53,6 +59,10 @@ automatischen Entscheids.**
 | Fehlerhafte/ungültige Konfiguration (`config.yaml`) | Klare Fehlermeldung auf stderr, Exit-Code 2 – kein roher Traceback. |
 | Ungültige `mempool_endpoints`-Antwort (Parser wirft eine Exception) | Warnung geloggt, dieser Poll-Zyklus wird übersprungen; der Poller läuft weiter. |
 | Header, der nicht zum behaupteten Hash passt (Stale-Blocks-Pipeline) | Verworfen (Status `unusable`), Warnung geloggt – kein Abbruch. |
+| `mempool-watch`: Node per RPC nicht erreichbar | Fehler geloggt, 30 s Pause, danach ein vollständiger Abgleich – verpasste Ereignisse werden so nachgeholt, kein Abbruch. |
+| `mempool-watch`: ZMQ-Nachrichten verloren / Node neu gestartet (Lücke im Nachrichtenzähler) | Warnung geloggt, sofortiger vollständiger Abgleich. |
+| `mempool-watch`: seit `reconcile_interval_seconds` keine einzige ZMQ-Nachricht | Warnung geloggt (typisch: `zmqpubsequence` fehlt oder Port nicht erreichbar – ZMQ selbst meldet so etwas nie als Fehler); der periodische Abgleich erkennt Treffer weiterhin, nur mit Verzögerung. |
+| `mempool-watch`: Sanktionsliste nach einer Änderung nicht lesbar/ohne `address`-Spalte | Fehler geloggt, die zuletzt gültige Liste bleibt aktiv. Beim Start (keine vorherige Liste) bricht der Prozess dagegen ab. |
 
 ## 9.3 Bekannte Einschränkungen / bewusste Design-Grenzen
 
@@ -126,6 +136,14 @@ Bewusste Design-Entscheidung, siehe Kapitel 5.4 – Bitcoin Cores
 Checkpoint-Mechanismus würde ohnehin nur einen kleinen, inkonsistenten
 Teil des Datensets als vollständigen Block erreichbar machen.
 
+### `mempool-watch` sieht nur, was durch den eigenen Mempool läuft
+
+Eine Transaktion, die nie im Mempool dieses Nodes war (direkt/privat an
+einen Miner übermittelt), taucht erst im Block auf – das deckt die
+Splunk-Seite über die On-Chain-Daten von `rpc-ingest` ab, nicht
+`mempool-watch` (Kapitel 11.9). Ebenso werden nur exakte Adresstreffer
+erkannt, keine Wechselgeld-/Cluster-Adressen derselben Akteure.
+
 ### `start.sh`/`stop.sh` starten keinen abgestürzten Prozess neu
 
 Für harte Dauerbetriebs-Anforderungen sind systemd-Units mit
@@ -146,7 +164,10 @@ Für harte Dauerbetriebs-Anforderungen sind systemd-Units mit
    beobachten, insbesondere während der initialen
    Genesis-Aufholjagd von `rpc-ingest` (kann je nach Node-Performance
    mehrere Stunden bis Tage dauern).
-7. Splunk-Inputs gemäß Kapitel 7.4 einrichten, sobald die ersten
+7. Für `mempool-watch`: `zmqpubsequence=…` in die `bitcoin.conf` des
+   Nodes eintragen, Node neu starten, `getzmqnotifications` prüfen und
+   `mempool_watch.zmq_endpoint` setzen (Kapitel 11.2).
+8. Splunk-Inputs gemäß Kapitel 7.4 einrichten, sobald die ersten
    abgeschlossenen Parts unter `parser-data/export/` vorliegen.
-8. Für einen gehärteten Dauerbetrieb: systemd-Units gemäß Kapitel 2.5
+9. Für einen gehärteten Dauerbetrieb: systemd-Units gemäß Kapitel 2.5
    einrichten statt dauerhaft auf `start.sh`/`stop.sh` zu setzen.

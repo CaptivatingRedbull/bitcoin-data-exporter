@@ -60,7 +60,7 @@ Direkte Umsetzung von Kapitel 7.4 in `inputs.conf`-Stanzas
 | Verzeichnis | Splunk-Input | Warum |
 |---|---|---|
 | `export/rpc/{blocks,transactions,inputs,outputs}/` | `batch` (`move_policy = sinkhole`) | Ein Part erscheint hier laut Kapitel 4.6 immer erst vollständig fertig – nie während er noch beschrieben wird. `batch` kann ihn deshalb gefahrlos konsumieren und löschen. |
-| `export/api/`, `export/stale/` | `monitor` | Der aktuelle Part wächst hier laufend weiter (Kapitel 3.2/5.5). Ein `batch`-Input würde riskieren, eine noch offene Datei mitten im Schreiben zu greifen. `monitor` löscht nie – alte rotierte Parts müssen separat (Skript/Cron) aufgeräumt werden, sobald Splunk sie nachweislich indiziert hat. |
+| `export/api/`, `export/stale/`, `export/mempool_watch/` | `monitor` | Der aktuelle Part wächst hier laufend weiter (Kapitel 3.2/5.5/11.6). Ein `batch`-Input würde riskieren, eine noch offene Datei mitten im Schreiben zu greifen. `monitor` löscht nie – alte rotierte Parts müssen separat (Skript/Cron) aufgeräumt werden, sobald Splunk sie nachweislich indiziert hat. |
 | Jedes `state/`-Verzeichnis | **kein Splunk-Input** | Siehe 10.5 – interne Buchführung, nie ansprechen. |
 
 **`crcSalt = <SOURCE>` auf jeder einzelnen Stanza:** Splunks Standard-
@@ -78,7 +78,7 @@ garantiert relevant.
 ## 10.4 Sourcetypes und Zeitfelder
 
 Jede Datei bekommt einen eigenen Sourcetype (`btc:<name>`), weil jede ein
-eigenes Spaltenschema hat (Kapitel 4.9–4.12, 5.6, 6.4) – ein gemeinsamer
+eigenes Spaltenschema hat (Kapitel 4.9–4.12, 5.6, 6.4, 11.6) – ein gemeinsamer
 Sourcetype für mehrere Schemata würde Feld-Extraktion und
 Zeitstempel-Zuordnung gegenseitig stören.
 
@@ -89,6 +89,7 @@ Zeitstempel-Zuordnung gegenseitig stören.
 | `inputs*.csv` | `btc:inputs` | `block_time` | `%s` |
 | `outputs*.csv` | `btc:outputs` | `block_time` | `%s` |
 | `stale_block_headers*.csv` | `btc:stale_block_headers` | `observed_at` (ISO-8601 UTC) | `%Y-%m-%dT%H:%M:%SZ` |
+| `sanctioned_tx_events*.csv` | `btc:sanctioned_tx_events` | `observed_at` (Zeitpunkt des Ereignisses, ISO-8601 UTC) | `%Y-%m-%dT%H:%M:%SZ` |
 | `prices*.csv` | `btc:prices` | `date_unix` (Preis-eigener Zeitstempel, **nicht** Poll-Zeitpunkt) | `%s` |
 
 Alle Zeitstempel sind UTC (Kapitel 7.5) – jede Stanza setzt deshalb
@@ -106,7 +107,7 @@ Zeichenposition, die bricht, sobald sich die Spaltenreihenfolge einer
 
 **Grundsatzentscheidung, auf Verzeichnisebene, nicht auf Feldebene:** Jede
 `state/`-Datei (`current.csv`, `latest.csv`, `block_status.csv`,
-`index/index.csv`, `reorg/*.csv`, `registry.csv`, die
+`index/index.csv`, `reorg/*.csv`, `registry.csv`, `flagged.json`, die
 `*_part_seq.csv`-Zähler) bekommt **keinen** Splunk-Input. Gründe (siehe
 auch Kapitel 7.2):
 
@@ -185,7 +186,7 @@ usw.) die richtige Wahl.
 Alle Sourcetypes verwenden in `inputs.conf` denselben Index `btc_parser`
 (Platzhaltername – vor dem ersten Forwarder-Start sowohl in Splunk Cloud
 als auch in Splunk Enterprise explizit anlegen, Indizes werden nicht
-automatisch erstellt). Ein gemeinsamer Index für alle zehn Sourcetypes
+automatisch erstellt). Ein gemeinsamer Index für alle Sourcetypes
 genügt hier, weil Zugriffskontrolle und Aufbewahrungsfristen für alle
 Dateien dieser Anwendung identisch sind; eine Aufteilung nach Index lohnt
 sich erst, sobald das für einzelne Sourcetypes nicht mehr zutrifft (z. B.

@@ -4,7 +4,7 @@
 > option, every output file/schema, ingestion guidance, source-file-by-
 > source-file walkthrough), see [`docs/`](docs/00-index.md).
 
-A Bitcoin block/mempool/price data pipeline with three independent
+A Bitcoin block/mempool/price data pipeline with four independent
 long-running processes/services instead of one multithreaded main script -
 they don't share state or failure domains, so a 429 on the API side never
 touches block parsing, and a node hiccup never touches pricing:
@@ -17,6 +17,10 @@ touches block parsing, and a node hiccup never touches pricing:
 - **Stale/orphaned chain-tip pipeline** (`stale-blocks-ingest`) - a separate
   sourcetype from `rpc-ingest`'s main-chain output, tracking non-active
   chain tips (see its own section below).
+- **Sanctioned-address mempool watcher** (`mempool-watch`) - checks every
+  tx entering this node's mempool (ZMQ `sequence` + periodic `getrawmempool`
+  reconcile) against a sanctions list and exports one event per state change
+  of each matching tx - never the mempool itself (see its own section below).
 - **API fetcher** (`api-poll`) - polls mempool.space's price endpoint on a
   budget so it never trips a 429, writing a minutely BTC/USD+EUR price
   snapshot (see **Pricing** below).
@@ -29,19 +33,20 @@ budget, RPC connection details, output paths - lives in
 
 ```
 full_app/
-  start.sh                     production-style startup: checks bitcoind, launches all three services in the background
+  start.sh                     production-style startup: checks bitcoind, launches all four services in the background
   stop.sh                      stops what start.sh started
   lib.sh                       shared helpers for start.sh/stop.sh
   run.py                       convenience CLI entrypoint
   backfill_price_gap.py        standalone, manually-run historic price gap backfill - see Pricing below
   requirements.txt
-  parser-data/                 all runtime data (created on first run) - logs/, state/{rpc,stale}
-                                (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale}
+  parser-data/                 all runtime data (created on first run) - logs/, state/{rpc,stale,mempool_watch}
+                                (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale,mempool_watch}
                                 (Splunk-facing - see config.yaml reference below)
   config/
     config.yaml                all settings (see below)
     config.production.yaml     same schema, pointed at the production pod's paths (see "Production deployment" below)
     pools-v2.json              bundled mining-pool signature dataset
+    sanctioned_addresses.csv   sanctions list for mempool-watch
   systemd/                     unit templates + install.sh for a hardened, reboot-safe deployment
   splunk/                      Splunk add-ons (forwarder inputs, parsing/props)
   docs/                        full German-language reference
@@ -71,6 +76,10 @@ full_app/
       stale_blocks.py          stale/orphaned chain-tip pipeline ("stale-blocks-ingest")
       stale_blocks_github.py   pulls the bitcoin-data/stale-blocks GitHub dataset
       stale_blocks_state.py    registry.csv - internal bookkeeping for stale_blocks.py
+      mempool_watch.py         sanctioned-address mempool watcher ("mempool-watch", "mempool-watch-check")
+      mempool_watch_state.py   flagged.json - internal bookkeeping for mempool_watch.py
+      sanctions_list.py        loads/normalizes/hot-reloads the sanctions list CSV(s)
+      zmq_sequence.py          Bitcoin Core ZMQ `sequence` topic subscriber
 ```
 
 ## Setup
@@ -95,7 +104,7 @@ remote node).
 ## Running it in production: `start.sh` / `stop.sh`
 
 ```sh
-./start.sh   # checks bitcoind is already reachable, then launches all three
+./start.sh   # checks bitcoind is already reachable, then launches all four
              # services in the background
 ./stop.sh    # stops them (SIGTERM, then SIGKILL after a 30s grace period)
 ```
@@ -107,18 +116,19 @@ remote node).
    isn't reachable, it fails immediately with a clear message instead of
    guessing at node lifecycle; go start/fix the node yourself, then re-run
    this script.
-2. Launches `rpc-ingest`, `stale-blocks-ingest`, and `api-poll` detached
+2. Launches `rpc-ingest`, `stale-blocks-ingest`, `api-poll`, and
+   `mempool-watch` detached
    (`nohup`, nothing tied to your terminal), tracking each as a PID file
    under `.pids/`. Re-running `start.sh` is safe - anything already running
    is left alone.
 
-All three commands log to `<logging.log_dir>/<command>.log` (rotating,
+All four commands log to `<logging.log_dir>/<command>.log` (rotating,
 20MB x5; default `parser-data/logs/`), with their raw stdout/stderr next to
 it at `<command>.out`. Point at a different config file with
 `BTC_PARSER_CONFIG=/path/other.yaml ./start.sh`.
 
-`stop.sh` sends SIGTERM to all three PIDs - `rpc-ingest`/`stale-blocks-ingest`
-finish their current batch/pass and checkpoint cleanly before exiting;
+`stop.sh` sends SIGTERM to all four PIDs - `rpc-ingest`/`stale-blocks-ingest`/
+`mempool-watch` finish their current batch/pass and checkpoint cleanly before exiting;
 `api-poll` (via a `SIGTERM` -> `KeyboardInterrupt` shim in `cli.py`) stops
 the same way it would on Ctrl-C. Neither script ever touches bitcoind, on
 startup or shutdown - it's entirely out of scope for both; stop it yourself
@@ -126,7 +136,10 @@ with `bitcoin-cli stop` if you want it down too.
 
 For a hardened Linux deployment, use `sudo systemd/install.sh` instead: it
 installs one systemd unit per service (restart-on-crash, survives reboots,
-and never restart-loops `api-poll` into a 429). `start.sh`/`stop.sh` cover
+and never restart-loops `api-poll` into a 429). On an existing install,
+adding a new service (e.g. `mempool-watch`) is: `git pull`,
+`.venv/bin/pip install -r requirements.txt`, re-run `sudo systemd/install.sh`
+(it refuses to proceed if the venv is missing a required package). `start.sh`/`stop.sh` cover
 local/dev use and simple always-on hosts, but don't restart a crashed
 process.
 
@@ -167,6 +180,14 @@ python run.py stale-blocks-ingest
 # Long-running poller for mempool.space's price endpoint, appending a
 # minutely BTC/USD+EUR row to prices.csv. Runs until Ctrl-C/SIGTERM or a 429.
 python run.py api-poll
+
+# Watch the mempool for txs paying to/spending from a sanctioned address.
+# Runs forever until SIGTERM/SIGINT.
+python run.py mempool-watch
+
+# One-off: run mempool-watch's matcher against a single tx and print the
+# matches (writes nothing). A confirmed tx needs --blockhash without -txindex.
+python run.py mempool-watch-check <txid> [--blockhash <hash>]
 
 # Refresh config/pools-v2.json from GitHub (normally automatic - see below)
 python run.py update-pools-dataset
@@ -336,6 +357,19 @@ only, default `parser-data/state/stale`) are kept separate on purpose.
 see **RPC Parser Reorg Handling** below for how this pipeline relates to
 `rpc-ingest`'s own reorg handling (they're independent: this one tracks
 non-active tips, `rpc-ingest` tracks the active chain).
+
+### `mempool_watch`
+
+Config for `mempool-watch` (uses the `rpc:` section for all bitcoin-cli
+calls): `zmq_endpoint` (the node's `zmqpubsequence=` address; empty =
+polling-only), `sanctions_list_paths` (one or more CSVs, header
+`address,name,first_name,sanctions_programs`, re-read on change without a
+restart), `output_dir`/`state_dir` (Splunk-facing
+`sanctioned_tx_events.csv` vs. internal `flagged.json`),
+`reconcile_interval_seconds` (full getrawmempool diff - startup, then this
+often), `rpc_workers`, `forget_after_confirmations`,
+`max_confirmation_scan_blocks`. See **Sanctioned-address mempool watcher**
+below.
 
 ### File rotation
 
@@ -544,6 +578,43 @@ this run's starting point cares about, it makes no difference - the
 normal loop and the reorg-recovery path are the same code either way, so
 there's nothing to reconcile specially at startup.
 
+## Sanctioned-address mempool watcher
+
+`mempool-watch` flags any mempool tx where a listed address **receives**
+(an output) or **spends** (an input's prevout - needs Bitcoin Core 25+ for
+`getrawtransaction <txid> 2`'s `prevout`; older nodes use a slower
+per-input fallback). Node side, add to `bitcoin.conf` and restart the node:
+
+```ini
+zmqpubsequence=tcp://0.0.0.0:28332     # 127.0.0.1 if mempool-watch runs on the node's host
+zmqpubsequencehwm=100000               # optional, fewer dropped messages under load
+```
+
+then check `bitcoin-cli getzmqnotifications` lists `pubsequence`. ZMQ has no
+auth - firewall the port to the parser host. `txindex` is not needed.
+
+Events go to `export/mempool_watch/sanctioned_tx_events.csv`, one row per
+matched input/output per event:
+
+| `event` | meaning |
+|---|---|
+| `seen` | first observed in the mempool (also logged as a WARNING) |
+| `confirmed` | mined - `block_height`/`block_hash` set |
+| `unconfirmed` | its block was reorged out; tracked again |
+| `replaced` | left the mempool because another tx spends the same input(s) - `replaced_by_txid` set |
+| `removed` | left the mempool unmined for any other reason (evicted, expired, conflicted) |
+
+Detection is ZMQ `sequence` (A/R/C/D events) with a full getrawmempool
+reconcile at startup, every `reconcile_interval_seconds`, and immediately on
+a ZMQ message-counter gap. `flagged.json` in `state_dir` keeps matching txs
+tracked across restarts, so a restart never re-reports a tx still in the
+mempool and still reports one that confirmed/left while the service was
+down. Not covered by design: txs that never pass through this node's
+mempool (mined privately/directly) - alert on those from the confirmed
+`btc:inputs`/`btc:outputs` data in Splunk instead. Full details (schema,
+testing with `mempool-watch-check` or a private test list, Splunk alert
+example): [docs chapter 11](docs/11-mempool-watch-sanktionsadressen.md).
+
 ## Storage & Splunk ingestion
 
 The parser host has a fixed, limited disk budget shared with the Bitcoin
@@ -568,8 +639,8 @@ steady-state, no excluding the newest file, no config discipline required:
   complete (see **File rotation** above). Either way, nothing growing is
   ever visible under `export/rpc/` - a `batch` input can consume and delete
   anything it finds there, at any time, with nothing excluded.
-- **`export/api/` and `export/stale/` - `monitor` (tailing,
-  non-destructive).** These aren't per-block atomic writes - each endpoint's
+- **`export/api/`, `export/stale/` and `export/mempool_watch/` - `monitor`
+  (tailing, non-destructive).** These aren't per-block atomic writes - each endpoint's
   `<name>.csv` (including `prices.csv`) and the stale-tip exports are a
   single file that's appended to and rotated by size like any other CSV in
   this app (see **File rotation** above), so the *current* part is always

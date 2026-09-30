@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import time
+from decimal import Decimal
 from typing import Any
 
 from btc_parser_app.config import RpcConfig
@@ -27,6 +28,19 @@ class RpcCliError(Exception):
     daemon should catch this specifically (see ingest.run_rpc_ingest)."""
 
 
+class RpcError(RpcCliError):
+    """The node answered, but with an RPC-level error (bitcoin-cli prints
+    "error code: -5 ..." to stderr) - e.g. a txid that's no longer in the
+    mempool. Deterministic, so only raised straight away (without the
+    rpc.max_cli_retries retry loop) when a caller opts in via
+    run_cli(..., retry_rpc_errors=False)."""
+
+
+def _is_rpc_error(exc: Exception) -> bool:
+    stderr = getattr(exc, "stderr", None) or ""
+    return isinstance(exc, subprocess.CalledProcessError) and "error code:" in stderr
+
+
 def _describe_error(exc: Exception) -> str:
     """CalledProcessError's default str() is just the command + exit code -
     it drops stderr, which is where bitcoin-cli actually puts the RPC
@@ -38,7 +52,7 @@ def _describe_error(exc: Exception) -> str:
     return str(exc)
 
 
-def run_cli(config: RpcConfig, cmd: list[str]) -> str:
+def run_cli(config: RpcConfig, cmd: list[str], *, retry_rpc_errors: bool = True) -> str:
     """Execute a bitcoin-cli command and return stdout.
 
     Retries a failed invocation (non-zero exit, timeout, or the binary
@@ -47,6 +61,12 @@ def run_cli(config: RpcConfig, cmd: list[str]) -> str:
     retry/timeout handling api/client.py already has for the mempool.space
     side. A bitcoind restart, cookie rotation, or a momentary network blip
     used to raise straight through every caller and kill the daemon.
+
+    retry_rpc_errors=False raises RpcError immediately for an RPC-level
+    error instead of retrying it - for callers (mempool-watch) where e.g.
+    "no such mempool transaction" is an expected, permanent answer, and
+    burning rpc.max_cli_retries * cli_retry_backoff_seconds on it would
+    stall the whole event loop.
     """
     full_cmd = [config.bitcoin_cli_path, *config.extra_args, *config.auth_args(), *cmd]
     last_exc: Exception | None = None
@@ -64,6 +84,8 @@ def run_cli(config: RpcConfig, cmd: list[str]) -> str:
             return result.stdout.strip()
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             last_exc = exc
+            if not retry_rpc_errors and _is_rpc_error(exc):
+                raise RpcError(f"bitcoin-cli {cmd!r}: {_describe_error(exc)}") from exc
             if attempt < config.max_cli_retries:
                 logger.warning(
                     "bitcoin-cli %s failed (%s); retrying in %.0fs (attempt %d/%d)",
@@ -117,3 +139,65 @@ def get_chain_tips(config: RpcConfig) -> list[dict[str, Any]]:
     index, which only ever contains blocks whose header has been accepted."""
     raw = run_cli(config, ["getchaintips"])
     return json.loads(raw)
+
+
+# =============================================================================
+# mempool-watch (btc_parser_app.rpc.mempool_watch)
+# =============================================================================
+
+
+def get_network_info(config: RpcConfig) -> dict[str, Any]:
+    return json.loads(run_cli(config, ["getnetworkinfo"]))
+
+
+def get_raw_mempool_txids(config: RpcConfig) -> list[str]:
+    """Every txid currently in the mempool (getrawmempool, non-verbose)."""
+    return json.loads(run_cli(config, ["getrawmempool"]))
+
+
+def get_raw_transaction(
+    config: RpcConfig, txid: str, blockhash: str | None = None
+) -> dict[str, Any]:
+    """`getrawtransaction <txid> 2 [blockhash]` - decoded tx including each
+    input's `prevout` (Bitcoin Core 25+). Works for any mempool tx without
+    -txindex; for a confirmed tx without -txindex, pass its blockhash.
+    Amounts are parsed as Decimal, never float. Raises RpcError straight
+    away (no retry loop) if the node doesn't know the tx."""
+    cmd = ["getrawtransaction", txid, "2"]
+    if blockhash:
+        cmd.append(blockhash)
+    raw = run_cli(config, cmd, retry_rpc_errors=False)
+    return json.loads(raw, parse_float=Decimal)
+
+
+def get_tx_out(
+    config: RpcConfig, txid: str, vout: int, include_mempool: bool
+) -> dict[str, Any] | None:
+    """`gettxout` - None if the output doesn't exist/is spent (bitcoin-cli
+    prints nothing at all for a JSON null result)."""
+    raw = run_cli(
+        config,
+        ["gettxout", txid, str(vout), "true" if include_mempool else "false"],
+        retry_rpc_errors=False,
+    )
+    return json.loads(raw, parse_float=Decimal) if raw else None
+
+
+def get_tx_spending_prevout(
+    config: RpcConfig, outpoints: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """`gettxspendingprevout` (Bitcoin Core 24+) - for each {txid, vout},
+    the mempool tx currently spending it, if any (`spendingtxid`)."""
+    raw = run_cli(
+        config,
+        ["gettxspendingprevout", json.dumps(outpoints)],
+        retry_rpc_errors=False,
+    )
+    return json.loads(raw)
+
+
+def get_block_txids(config: RpcConfig, block_hash: str) -> tuple[int, int, list[str]]:
+    """(height, confirmations, txids) from `getblock <hash> 1`.
+    confirmations is -1 for a block that's no longer on the active chain."""
+    block = json.loads(get_block_verbose(config, block_hash, verbosity=1))
+    return int(block["height"]), int(block["confirmations"]), list(block["tx"])

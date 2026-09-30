@@ -206,3 +206,52 @@ stale_blocks:
   github:
     csv_url: "https://raw.githubusercontent.com/bitcoin-data/stale-blocks/master/stale-blocks.csv"
     poll_interval_seconds: 86400 # daily
+
+# -----------------------------------------------------------------------
+# Sanctioned-address mempool watcher ("mempool-watch" command,
+# btc_parser_app.rpc.mempool_watch). Checks every tx entering this node's
+# mempool against the sanctions list(s) below and exports one event per
+# state change of a matching tx (seen/confirmed/replaced/removed/
+# unconfirmed) - the mempool itself is never exported. Uses the rpc:
+# section above for all bitcoin-cli calls.
+# -----------------------------------------------------------------------
+mempool_watch:
+  # Bitcoin Core's ZMQ `sequence` publisher - must match `zmqpubsequence=`
+  # in the node's bitcoin.conf (node restart required after adding it).
+  # Leave empty ("") for polling-only mode: then the reconcile pass below
+  # is the only detection path, so lower reconcile_interval_seconds to
+  # e.g. 30.
+  zmq_endpoint: "tcp://127.0.0.1:28332"
+
+  # One or more CSVs with header `address,name,first_name,sanctions_programs`
+  # (only `address` is mandatory). Merged; the first file wins on a
+  # duplicate address. Re-read automatically when a file changes - no
+  # restart needed. A second, private list is handy for testing, e.g.
+  #   ["config/sanctioned_addresses.csv", "config/test_addresses.csv"]
+  sanctions_list_paths:
+    - "config/sanctioned_addresses.csv"
+
+  # Splunk-facing - point a `monitor` input here (sanctioned_tx_events*.csv).
+  output_dir: "parser-data/export/mempool_watch"
+  # Internal bookkeeping only (flagged.json - which matching txs are
+  # currently tracked). Never Splunk-facing.
+  state_dir: "parser-data/state/mempool_watch"
+
+  # Full getrawmempool diff: at startup, then this often. Safety net for
+  # dropped ZMQ messages (a gap in ZMQ's message counter also triggers one
+  # immediately) - or the only detection path in polling-only mode.
+  reconcile_interval_seconds: 300
+
+  # Parallel bitcoin-cli calls when checking many txs at once (mostly the
+  # startup scan of the whole mempool). Keep <= the node's rpcthreads
+  # (default 4) - more just queues up on the node.
+  rpc_workers: 4
+
+  # Stop tracking a confirmed tx (for reorg detection) once its block is
+  # this deep.
+  forget_after_confirmations: 6
+
+  # When a tracked tx vanishes from the mempool while ZMQ events were
+  # missed, search back at most this many blocks for it before calling it
+  # `removed`.
+  max_confirmation_scan_blocks: 50
