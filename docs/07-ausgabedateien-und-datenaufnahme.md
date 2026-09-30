@@ -41,6 +41,8 @@ full_app/
         outputs/
       stale/                     stale_blocks.state_dir (NICHT für Splunk)
         registry.csv
+      mempool_watch/             mempool_watch.state_dir (NICHT für Splunk)
+        flagged.json
     export/
       rpc/                       rpc.output_dir - für Splunk `batch`
         blocks/
@@ -55,9 +57,12 @@ full_app/
         prices.csv                (Live-Poll UND Kraken-Import, siehe Kap. 6)
       stale/                     stale_blocks.output_dir - für Splunk `monitor`
         stale_block_headers.csv (+ .000002.csv, ...)
+      mempool_watch/             mempool_watch.output_dir - für Splunk `monitor`
+        sanctioned_tx_events.csv (+ .000002.csv, ...)
   config/
     config.yaml / config.production.yaml
     pools-v2.json                 Mining-Pool-Signaturdatenset
+    sanctioned_addresses.csv      Sanktionsliste für mempool-watch (Kap. 11)
     XBTUSD_1.csv / XBTEUR_1.csv   (nicht mitgeliefert) Kraken-1-Minuten-Exporte
 ```
 
@@ -82,6 +87,8 @@ großen Datenvolume statt relativ zu `full_app/` (siehe
 | `blocks_part_seq.csv` / `transactions_part_seq.csv` / `inputs_part_seq.csv` / `outputs_part_seq.csv` | `rpc.state_dir` | 1 Zeile, überschrieben | Nein (intern) | Kapitel 4.6 |
 | `stale_block_headers.csv` | `stale_blocks.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 5.6 |
 | `registry.csv` | `stale_blocks.state_dir` | veränderlich, überschrieben | **Nein** | Kapitel 5.7 |
+| `sanctioned_tx_events.csv` | `mempool_watch.output_dir` | Append-only, rotiert | Ja (`monitor`) | Kapitel 11.6 |
+| `flagged.json` | `mempool_watch.state_dir` | ganze Datei überschrieben (atomar) | **Nein** | Kapitel 11.7 |
 | `prices.csv` | `mempool_api.output_dir` | Append-only, rotiert | Ja (`monitor`, **nie löschen**) | Kapitel 6.4, 6.6 |
 | `pools-v2.json` | `mining_pools_dataset.local_path` | ganze Datei überschrieben | Nein (Konfigurationsdaten) | Kapitel 4.8 |
 | `<kommando>.log` | `logging.log_dir` | rotierend (20 MB × 5) | Nein (Betriebslog) | Kapitel 9 |
@@ -175,8 +182,8 @@ neuesten Datei, keine zusätzliche Betriebsdisziplin nötig:
   In beiden Fällen ist nie ein noch wachsender Part unter `export/rpc/`
   sichtbar – ein `batch`-Input kann hier jederzeit alles konsumieren und
   löschen, ohne etwas ausschließen zu müssen.
-- **`export/api/` und `export/stale/` → `monitor` (nicht-destruktives
-  Tailing).** Das sind keine atomaren Pro-Block-Writes, sondern klassisch
+- **`export/api/`, `export/stale/` und `export/mempool_watch/` → `monitor`
+  (nicht-destruktives Tailing).** Das sind keine atomaren Pro-Block-Writes, sondern klassisch
   angehängte, größenrotierte Dateien (siehe 7.3) – der jeweils aktuelle
   Part wächst laufend weiter. Ein `batch`-Input würde hier riskieren,
   eine noch wachsende Datei mitten im Schreiben zu greifen. `monitor`
@@ -191,7 +198,8 @@ neuesten Datei, keine zusätzliche Betriebsdisziplin nötig:
 
 Da die Zuordnung fest ist (nicht mehr phasenabhängig wie in früheren
 Versionen), reicht eine einmalige Einrichtung: `batch`-Input auf
-`export/rpc/`, `monitor`-Inputs auf `export/api/` und `export/stale/` –
+`export/rpc/`, `monitor`-Inputs auf `export/api/`, `export/stale/` und
+`export/mempool_watch/` –
 unabhängig davon, ob gerade eine initiale Genesis-Aufholjagd läuft oder
 der Prozess längst dem Tip folgt. **Niemals** einen Splunk-Input auf ein
 `state/`-Verzeichnis zeigen lassen.
@@ -213,6 +221,9 @@ UTC:
   Import) – nicht der Abrufzeitpunkt.
 - `stale_block_headers.csv`/`registry.csv`: `observed_at`/`first_seen`
   sind ISO-8601-UTC-Strings (`%Y-%m-%dT%H:%M:%SZ`).
+- `sanctioned_tx_events.csv`/`flagged.json`: `observed_at` (Zeitpunkt des
+  Ereignisses) und `first_seen_at` (erstes Auftauchen der Transaktion im
+  Mempool) im selben ISO-8601-UTC-Format.
 - Log-Dateien: `%Y-%m-%dT%H:%M:%S%z` (inkl. lokaler Zeitzonen-Offset des
   Hosts).
 

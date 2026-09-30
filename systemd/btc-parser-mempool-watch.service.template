@@ -1,0 +1,30 @@
+# Installed by systemd/install.sh as /etc/systemd/system/btc-parser-mempool-watch.service
+# (APP_DIR and APP_USER filled in by that script). Do not edit the installed copy by
+# hand - re-run install.sh instead, it's idempotent.
+[Unit]
+Description=btc_parser_app - sanctioned-address mempool watcher (mempool-watch)
+Documentation=file://{{APP_DIR}}/docs/11-mempool-watch-sanktionsadressen.md
+PartOf=btc-parser.target
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{APP_USER}}
+WorkingDirectory={{APP_DIR}}
+EnvironmentFile=-{{APP_DIR}}/systemd/env
+ExecStart=/bin/sh -c '"{{APP_DIR}}/.venv/bin/python" "{{APP_DIR}}/run.py" ${BTC_PARSER_CONFIG:+--config "$BTC_PARSER_CONFIG"} mempool-watch'
+
+# An unreachable node or ZMQ endpoint is handled inside the process (it
+# backs off and retries, see rpc/mempool_watch.py) - so a nonzero exit is a
+# real crash (e.g. an unreadable sanctions list at startup) and worth
+# retrying after a cooldown.
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+[Install]
+WantedBy=btc-parser.target

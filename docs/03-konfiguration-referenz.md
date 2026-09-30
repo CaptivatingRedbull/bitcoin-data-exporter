@@ -190,7 +190,24 @@ die Splunk-seitigen Exporte, `state_dir` nur die interne Buchführung
 Splunk-Forwarder, der auf `output_dir` zeigt, nicht versehentlich auch
 diese interne Datei aufnimmt. Details in Kapitel 5.
 
-## 3.7 Dateirotation (gilt für die gesamte Anwendung)
+## 3.7 `mempool_watch`
+
+Konfiguration für `mempool-watch` (Kapitel 11). Alle `bitcoin-cli`-Aufrufe
+laufen über den `rpc`-Abschnitt oben (gleiche Verbindung/Authentifizierung
+wie `rpc-ingest`).
+
+| Schlüssel | Typ | Default | Beschreibung |
+|---|---|---|---|
+| `zmq_endpoint` | string | – (Pflicht, darf leer sein) | ZMQ-`sequence`-Publisher des Nodes, z. B. `tcp://127.0.0.1:28332` – muss zu `zmqpubsequence=` in dessen `bitcoin.conf` passen. Leer (`""`) = reiner Polling-Modus: dann ist der Abgleich (`reconcile_interval_seconds`) der einzige Erkennungsweg und sollte entsprechend kurz sein (z. B. 30). |
+| `sanctions_list_paths` | Liste von Pfaden (oder ein einzelner Pfad) | – (Pflicht, nicht leer) | Eine oder mehrere CSV-Dateien mit Kopfzeile `address,name,first_name,sanctions_programs` (nur `address` ist Pflicht). Werden zusammengeführt, bei doppelter Adresse gewinnt die erste Datei. Änderungen werden ohne Neustart übernommen (Kapitel 11.5). |
+| `output_dir` | Pfad | – (Pflicht) | Splunk-seitiger Export, standardmäßig `parser-data/export/mempool_watch`. |
+| `state_dir` | Pfad | – (Pflicht) | Nur interne Buchführung (`flagged.json`), standardmäßig `parser-data/state/mempool_watch`. |
+| `reconcile_interval_seconds` | float (>0) | `300` | Intervall des vollständigen `getrawmempool`-Abgleichs (zusätzlich immer beim Start und sofort nach einer erkannten ZMQ-Lücke). |
+| `rpc_workers` | int (≥1) | `4` | Parallele `bitcoin-cli`-Aufrufe beim Prüfen vieler Transaktionen (v. a. beim Startscan des ganzen Mempools). Nicht über `rpcthreads` des Nodes (Default 4) wählen – mehr stauen sich dort nur. |
+| `forget_after_confirmations` | int (≥1) | `6` | Ab dieser Tiefe des bestätigenden Blocks wird eine Transaktion nicht mehr auf Reorgs überwacht und aus `flagged.json` entfernt. |
+| `max_confirmation_scan_blocks` | int (≥1) | `50` | Verschwindet eine überwachte Transaktion aus dem Mempool, ohne dass ein ZMQ-Ereignis ankam (Downtime, verlorene Nachrichten), wird höchstens so viele Blöcke zurück nach ihr gesucht, bevor sie als `removed` gilt. |
+
+## 3.8 Dateirotation (gilt für die gesamte Anwendung)
 
 Nicht Teil von `config.yaml` (nicht konfigurierbar), aber relevant für
 jede Sektion oben: Jede Append-only-CSV dieser Anwendung wächst
@@ -199,7 +216,7 @@ Dateipart auf ~900 MB (`MAX_PART_BYTES = 900_000_000`) und rollt vor
 Überschreiten in einen neuen nummerierten Part. Details und
 Ingestion-Implikationen in Kapitel 7.
 
-## 3.8 Beispiel: entfernter Node über SSH-Tunnel oder Netzwerk
+## 3.9 Beispiel: entfernter Node über SSH-Tunnel oder Netzwerk
 
 ```yaml
 rpc:

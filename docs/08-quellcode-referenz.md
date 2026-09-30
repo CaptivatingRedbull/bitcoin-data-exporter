@@ -12,14 +12,17 @@ Rolle zuzuordnen.
 | Datei | Rolle |
 |---|---|
 | `run.py` | Komfort-Einstiegspunkt: hängt `full_app/` an `sys.path` und ruft `btc_parser_app.cli.main()` auf, damit `python run.py <kommando>` von überall funktioniert, ohne `PYTHONPATH` setzen oder in `full_app/` wechseln zu müssen. |
-| `start.sh` | Produktionsnaher Start: prüft RPC-Erreichbarkeit, startet alle drei Dauerprozesse losgelöst im Hintergrund, PID-Tracking über `.pids/`. Schreibt rohe `.out`-Logs nach `logging.log_dir`. Siehe Kapitel 2. |
+| `start.sh` | Produktionsnaher Start: prüft RPC-Erreichbarkeit, startet alle vier Dauerprozesse losgelöst im Hintergrund, PID-Tracking über `.pids/`. Schreibt rohe `.out`-Logs nach `logging.log_dir`. Siehe Kapitel 2. |
 | `stop.sh` | Stoppt, was `start.sh` gestartet hat (`SIGTERM`, nach 30 s `SIGKILL`). Siehe Kapitel 2. |
 | `lib.sh` | Von `start.sh`/`stop.sh` per `source` eingebundene Hilfsfunktion `pid_matches_component()` – verhindert, dass eine PID-Wiederverwendung nach einem Absturz fälschlich als "läuft noch" erkannt wird. |
-| `requirements.txt` | Python-Abhängigkeiten: `polars`, `requests`, `PyYAML`. |
+| `requirements.txt` | Python-Abhängigkeiten: `polars`, `requests`, `PyYAML`, `pyzmq`. |
 | `README.md` | Kürzere, englischsprachige Projektübersicht. |
 | `config/config.yaml` | Standardkonfiguration für lokale/Dev-Nutzung, durchgängig kommentiert. |
 | `config/config.production.yaml` | Produktivkonfiguration – gleiches Schema, zeigt auf die Pfade/Netzwerkadressen der Zielumgebung. |
 | `config/pools-v2.json` | Mitgeliefertes Mining-Pool-Signaturdatenset (Snapshot von `mempool/mining-pools`, MIT-lizenziert). |
+| `config/sanctioned_addresses.csv` | Sanktionsliste für `mempool-watch` (`address,name,first_name,sanctions_programs`). Siehe Kapitel 11.5. |
+| `systemd/` | Unit-Templates (eine pro Dauerprozess plus `btc-parser.target`) und `install.sh`. Siehe Kapitel 2.5. |
+| `splunk/` | Splunk-Add-ons für Inputs (Forwarder) und Parsing (`props.conf`). Siehe Kapitel 10. |
 | `config/XBTUSD_1.csv` / `config/XBTEUR_1.csv` | **Nicht mitgeliefert** – hier die Kraken-1-Minuten-OHLC-Exporte ablegen (siehe Kapitel 6). |
 
 Zur Laufzeit zusätzlich erzeugt (nicht im Repository): `.pids/`,
@@ -31,7 +34,7 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | Datei | Rolle |
 |---|---|
 | `__init__.py` | Leer – markiert das Verzeichnis als Python-Paket. |
-| `cli.py` | `argparse`-Einstiegspunkt (`build_parser()`, `main()`). Definiert alle fünf Subkommandos, lädt die Konfiguration, konfiguriert Logging, dispatcht zum jeweiligen Modul. Enthält das `SIGTERM → KeyboardInterrupt`-Shim für `api-poll`. Siehe Kapitel 2. |
+| `cli.py` | `argparse`-Einstiegspunkt (`build_parser()`, `main()`). Definiert alle sechs Subkommandos, lädt die Konfiguration, konfiguriert Logging, dispatcht zum jeweiligen Modul. Enthält das `SIGTERM → KeyboardInterrupt`-Shim für `api-poll`. Siehe Kapitel 2. |
 | `config.py` | Lädt und validiert `config.yaml` in typisierte, unveränderliche (`frozen`) Dataclasses (`AppConfig` und Unter-Configs je Sektion). Jedes andere Modul erhält seine Konfiguration als Parameter statt globaler Konstanten. Siehe Kapitel 3. |
 
 ### `btc_parser_app/common/` – geteilte Infrastruktur
@@ -39,9 +42,9 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | Datei | Rolle |
 |---|---|
 | `csv_writer.py` | Gemeinsamer, größenrotierender Append-only-CSV-Writer (`write_rows_to_csv`) sowie die Lesefunktionen für rotierte logische CSVs (`read_csv_parts`, `csv_parts_exist`, `all_parts`) und die Part-Adressierungs-Hilfsfunktionen (`part_path`, `existing_part_numbers`), die `rpc/part_writer.py` und `rpc/reorg_state.py` für die über zwei Verzeichnisse verteilten `blocks/`/`transactions/`-Parts benötigen. Siehe Kapitel 7.3. |
-| `atomic_write.py` | `atomic_replace()` – schreibt eine neue Datei komplett an einen Temp-Pfad und ersetzt das Ziel per `os.replace()` (atomar auf POSIX), sodass ein Absturz mitten im Schreiben nie eine abgeschnittene Zustandsdatei hinterlässt. Verwendet von `current.csv`, `latest.csv`, `block_status.csv`, `registry.csv`, `pools-v2.json`, sowie von `part_writer.py`s atomarem Pro-Block-Schreibmodus. |
+| `atomic_write.py` | `atomic_replace()` – schreibt eine neue Datei komplett an einen Temp-Pfad und ersetzt das Ziel per `os.replace()` (atomar auf POSIX), sodass ein Absturz mitten im Schreiben nie eine abgeschnittene Zustandsdatei hinterlässt. Verwendet von `current.csv`, `latest.csv`, `block_status.csv`, `registry.csv`, `flagged.json`, `pools-v2.json`, sowie von `part_writer.py`s atomarem Pro-Block-Schreibmodus. |
 | `logging_setup.py` | `configure_logging()` – richtet Konsolen- und (falls ein Komponentenname übergeben wird) rotierendes Datei-Logging ein (20 MB × 5 Dateien). Siehe Kapitel 9. |
-| `stop_signal.py` | `install_stop_signal()` – gemeinsamer `SIGTERM`/`SIGINT`-Handler für `rpc-ingest` und `stale-blocks-ingest`: setzt nur ein `threading.Event`, das die Schleifen zwischen Arbeitsschritten prüfen, sodass jeder Stopp auf einem sauberen Checkpoint landet. |
+| `stop_signal.py` | `install_stop_signal()` – gemeinsamer `SIGTERM`/`SIGINT`-Handler für `rpc-ingest`, `stale-blocks-ingest` und `mempool-watch`: setzt nur ein `threading.Event`, das die Schleifen zwischen Arbeitsschritten prüfen, sodass jeder Stopp auf einem sauberen Checkpoint landet. |
 | `block_header.py` | Rohe 80-Byte-Bitcoin-Blockheader (de)serialisieren und deren Hash validieren (`header_hash()`, `validate_header_hash()`, `parse_header()`). Verwendet ausschließlich von der Stale-Blocks-Pipeline. Siehe Kapitel 5.3. |
 
 ### `btc_parser_app/rpc/` – `bitcoin-cli`-Seite
@@ -49,13 +52,17 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | Datei | Rolle |
 |---|---|
 | `__init__.py` | Leer. |
-| `client.py` | Dünner `bitcoin-cli`-Subprozess-Wrapper mit Retry/Timeout (`run_cli()`), plus die konkreten RPC-Aufrufe (`get_block_count`, `get_block_hash`, `get_block_verbose`, `get_block_header`, `get_block_header_raw`, `get_chain_tips`). Siehe Kapitel 4.7. |
+| `client.py` | Dünner `bitcoin-cli`-Subprozess-Wrapper mit Retry/Timeout (`run_cli()`), plus die konkreten RPC-Aufrufe (`get_block_count`, `get_block_hash`, `get_block_verbose`, `get_block_header`, `get_block_header_raw`, `get_chain_tips`, sowie für `mempool-watch` `get_raw_mempool_txids`, `get_raw_transaction`, `get_tx_out`, `get_tx_spending_prevout`, `get_block_txids`, `get_network_info`). `run_cli(..., retry_rpc_errors=False)` wirft bei einem deterministischen RPC-Fehler (z. B. „No such mempool transaction“) sofort `RpcError`, statt die Retry-Schleife zu durchlaufen. Siehe Kapitel 4.7. |
 | `block_parser.py` | Wandelt ein `getblock verbosity=3`-JSON in flache Block-/Transaktions-Event-Dicts um (`aggregate_block()`, `aggregate_transaction()`). Enthält die gesamte Feldberechnungslogik für `blocks.csv`/`transactions.csv`; reicht den rohen Coinbase-`scriptSig`/die Auszahlungsadressen nur als internen Rückgabewert an die Mining-Pool-Zuordnung weiter, ohne sie zu exportieren. Siehe Kapitel 4.9–4.10. |
 | `mining_pools.py` | Mining-Pool-Extraktor: `PoolMatcher` lädt das Signaturdatenset und matcht per Coinbase-Tag oder Auszahlungsadresse (`PoolMatcher.match()`). Siehe Kapitel 4.8. |
 | `reorg_state.py` | Zustandsdateien der Reorg-Logik: `IndexStore` (`index/index.csv`), `BlockStatusStore` (`block_status.csv`), Pointer-Lese-/Schreibfunktionen (`current.csv`/`latest.csv`), `write_reorg_log()` (`reorg/`-Audit-CSVs), `seed_index_from_blocks_csv()` (liest `blocks.csv`-Parts aus sowohl `state_dir` als auch `output_dir`). Siehe Kapitel 4.5. |
 | `part_writer.py` | `PartSequencer` – durable Part-Nummerierung sowie Batch-/Atomar-Schreibmodus und die `state_dir → output_dir`-Übergabe für `blocks/`/`transactions/`. Siehe Kapitel 4.6. |
 | `ingest.py` | Hauptschleife des RPC-Parsers (`run_rpc_ingest()`): Katch-up, Tip-Following, Reorg-Erkennung (`_recover_from_reorg()`) und -Behebung, Umschalten zwischen Batch- und atomarem Schreibmodus (`_drain()`). Der einzige Einstiegspunkt für das Kommando `rpc-ingest`. Siehe Kapitel 4.2–4.4, 4.6. |
 | `stale_blocks.py` | Hauptschleife der Stale-Blocks-Pipeline (`run_stale_blocks_ingest()`): Node-Poll- und GitHub-Pull-Durchlauf, Header-Validierung, Export-Gating. Der einzige Einstiegspunkt für das Kommando `stale-blocks-ingest`. Siehe Kapitel 5.2–5.3. |
+| `mempool_watch.py` | Hauptschleife von `mempool-watch` (`run_mempool_watch()`), `MempoolWatcher` (ZMQ-Ereignisbehandlung, Abgleich, Bestätigungs-/Reorg-Verfolgung), der Adressabgleich (`match_tx()`) und der Export nach `sanctioned_tx_events.csv`; außerdem `check_single_tx()` für `mempool-watch-check`. Siehe Kapitel 11. |
+| `mempool_watch_state.py` | `FlaggedTxStore` – interne Buchführung (`flagged.json`) über die aktuell verfolgten Treffer-Transaktionen. Siehe Kapitel 11.7. |
+| `sanctions_list.py` | `SanctionsList` – lädt eine oder mehrere Sanktionslisten-CSVs, normalisiert Adressen (bech32 → Kleinschreibung) und lädt bei Dateiänderung automatisch neu. Siehe Kapitel 11.5. |
+| `zmq_sequence.py` | `ZmqSequenceSubscriber` – abonniert Bitcoin Cores ZMQ-Topic `sequence`, parst A/R/C/D-Nachrichten und erkennt Lücken im Nachrichtenzähler. Siehe Kapitel 11.3. |
 | `stale_blocks_github.py` | Zieht `bitcoin-data/stale-blocks`s Header-CSV von GitHub (`fetch_stale_blocks_csv()`). Siehe Kapitel 5.2. |
 | `stale_blocks_state.py` | `StaleBlockRegistry` – interne Buchführung (`registry.csv`) darüber, welche nicht-aktiven Blockhashes bereits bekannt sind und welcher Status zuletzt exportiert wurde. Siehe Kapitel 5.7. |
 
@@ -92,6 +99,12 @@ run.py
        │    ├─ btc_parser_app.rpc.stale_blocks_github
        │    ├─ btc_parser_app.rpc.stale_blocks_state
        │    └─ btc_parser_app.common.block_header
+       ├─ btc_parser_app.rpc.mempool_watch
+       │    ├─ btc_parser_app.rpc.client
+       │    ├─ btc_parser_app.rpc.sanctions_list
+       │    ├─ btc_parser_app.rpc.mempool_watch_state
+       │    ├─ btc_parser_app.rpc.zmq_sequence   (pyzmq, erst zur Laufzeit importiert)
+       │    └─ btc_parser_app.common.csv_writer
        ├─ btc_parser_app.api.poller
        │    ├─ btc_parser_app.api.client
        │    │    └─ btc_parser_app.api.rate_limiter

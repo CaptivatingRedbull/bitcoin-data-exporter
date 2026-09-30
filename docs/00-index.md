@@ -12,7 +12,7 @@ Stand zum Zeitpunkt ihrer Erstellung.
 ## Kapitelübersicht
 
 1. [Überblick und Architektur](01-ueberblick-und-architektur.md)
-   Was die Anwendung tut, welche drei Prozesse sie umfasst, warum sie so
+   Was die Anwendung tut, welche vier Prozesse sie umfasst, warum sie so
    aufgeteilt ist, und welche Datenquellen sie anzapft.
 2. [Installation und Betrieb](02-installation-und-betrieb.md)
    Voraussetzungen, Einrichtung, `start.sh`/`stop.sh`, alle CLI-Kommandos,
@@ -45,6 +45,11 @@ Stand zum Zeitpunkt ihrer Erstellung.
     [`splunk/`](../splunk/): Test (Splunk Cloud) vs. Produktiv (Splunk
     Enterprise), Sourcetype-/Zeitfeld-Zuordnung, und welche Felder/
     Verzeichnisse indiziert werden bzw. bewusst nicht, und warum.
+11. [Mempool-Watch: Sanktionsadressen im Mempool](11-mempool-watch-sanktionsadressen.md)
+    Wie `mempool-watch` jede neue Mempool-Transaktion (ZMQ `sequence` +
+    periodischer Abgleich) gegen eine Sanktionsliste prüft, welche
+    Node-Konfiguration dafür nötig ist, und welche Ereignisse nach Splunk
+    exportiert werden.
 
 ## Kurzeinstieg
 

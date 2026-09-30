@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Production-style startup for btc_parser_app: checks the Bitcoin node is
-# already reachable, then launches the three long-running services
-# (rpc-ingest, stale-blocks-ingest, api-poll) detached in the background,
-# logging to the config's logging.log_dir.
+# already reachable, then launches the four long-running services
+# (rpc-ingest, stale-blocks-ingest, api-poll, mempool-watch) detached in the
+# background, logging to the config's logging.log_dir.
 #
 # This script NEVER starts a bitcoind of its own, local or otherwise - it
 # only checks reachability and fails with a clear message if the node
@@ -120,10 +120,11 @@ fi
 start_component rpc-ingest rpc-ingest
 start_component stale-blocks-ingest stale-blocks-ingest
 start_component api-poll api-poll
+start_component mempool-watch mempool-watch
 
 echo ""
-echo "All three services are running in the background."
-echo "  Structured logs: $LOG_DIR/{rpc-ingest,stale-blocks-ingest,api-poll}.log (rotated)"
-echo "  Raw stdout/stderr: $LOG_DIR/{rpc-ingest,stale-blocks-ingest,api-poll}.out"
-echo "  PIDs: $PID_DIR/{rpc-ingest,stale-blocks-ingest,api-poll}.pid"
+echo "All four services are running in the background."
+echo "  Structured logs: $LOG_DIR/{rpc-ingest,stale-blocks-ingest,api-poll,mempool-watch}.log (rotated)"
+echo "  Raw stdout/stderr: $LOG_DIR/{rpc-ingest,stale-blocks-ingest,api-poll,mempool-watch}.out"
+echo "  PIDs: $PID_DIR/{rpc-ingest,stale-blocks-ingest,api-poll,mempool-watch}.pid"
 echo "  Stop with: $SCRIPT_DIR/stop.sh"

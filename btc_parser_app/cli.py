@@ -16,6 +16,16 @@ Commands:
                             bitcoin-data/stale-blocks GitHub dataset -> stale_blocks.output_dir/).
                             Separate sourcetype from rpc-ingest's main-chain output. Runs until
                             SIGTERM/SIGINT.
+    mempool-watch           Watch this node's mempool (ZMQ sequence + periodic getrawmempool
+                            reconcile) for transactions paying to/spending from an address on
+                            mempool_watch.sanctions_list_paths, exporting one event per state
+                            change (seen/confirmed/replaced/removed/unconfirmed) to
+                            mempool_watch.output_dir/sanctioned_tx_events.csv. Runs until
+                            SIGTERM/SIGINT.
+    mempool-watch-check TXID [--blockhash HASH]
+                            One-off: run mempool-watch's matcher against a single tx (in the
+                            mempool, or confirmed - then pass its block hash) and print the
+                            matches. Writes nothing - for testing the list/matching.
     api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM),
                             including the minutely "prices" endpoint that writes
                             mempool_api.output_dir/prices.csv. Exit code 75 (not 1) on a 429 stop -
@@ -31,7 +41,7 @@ parameters on the command line instead of from config.yaml:
 See btc_parser_app/api/price_gap_backfill.py for details.
 
 For always-on production use, don't invoke this directly - use ../start.sh,
-(or the systemd units in ../systemd/), which also make sure the three
+(or the systemd units in ../systemd/), which also make sure the four
 long-running commands run detached with logs under logging.log_dir.
 
 See full_app/README.md for details and full_app/config/config.yaml for
@@ -41,6 +51,8 @@ every setting these commands read.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import signal
 import sys
 
@@ -51,7 +63,9 @@ from btc_parser_app.api.mining_pools_dataset import refresh as refresh_pools_dat
 from btc_parser_app.api.poller import run_poller
 from btc_parser_app.common.logging_setup import configure_logging
 from btc_parser_app.config import ConfigError, load_config
+from btc_parser_app.rpc.client import RpcCliError
 from btc_parser_app.rpc.ingest import run_rpc_ingest
+from btc_parser_app.rpc.mempool_watch import check_single_tx, run_mempool_watch
 from btc_parser_app.rpc.stale_blocks import run_stale_blocks_ingest
 
 
@@ -81,6 +95,20 @@ def build_parser() -> argparse.ArgumentParser:
         "stale-blocks-ingest",
         help="Run the stale/orphaned chain-tip pipeline (getchaintips + GitHub dataset)",
     )
+    subparsers.add_parser(
+        "mempool-watch",
+        help="Watch the mempool for transactions touching a sanctioned address",
+    )
+    check = subparsers.add_parser(
+        "mempool-watch-check",
+        help="Run mempool-watch's matcher against one tx and print the matches (writes nothing)",
+    )
+    check.add_argument("txid")
+    check.add_argument(
+        "--blockhash",
+        default=None,
+        help="Block containing the tx - required for a confirmed tx unless the node runs -txindex",
+    )
     subparsers.add_parser("api-poll", help="Run the mempool.space endpoint poller")
     subparsers.add_parser(
         "update-pools-dataset", help="Force-refresh config/pools-v2.json from GitHub"
@@ -103,6 +131,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
+    if args.command == "mempool-watch-check":
+        # One-off diagnostic - console logging only, no <command>.log file.
+        configure_logging(config.logging)
+        try:
+            matches = check_single_tx(config, args.txid, args.blockhash)
+        except RpcCliError as exc:
+            print(f"Could not fetch {args.txid}: {exc}", file=sys.stderr)
+            return 1
+        except (OSError, ValueError, csv.Error) as exc:
+            print(f"Could not load the sanctions list: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(matches, indent=2))
+        print(f"{len(matches)} sanctioned input/output match(es).", file=sys.stderr)
+        return 0
+
     configure_logging(config.logging, component=args.command)
 
     if args.command == "rpc-ingest":
@@ -111,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "stale-blocks-ingest":
         run_stale_blocks_ingest(config)
+        return 0
+
+    if args.command == "mempool-watch":
+        run_mempool_watch(config)
         return 0
 
     if args.command == "api-poll":

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stops the background services started by start.sh (rpc-ingest,
-# stale-blocks-ingest, api-poll): SIGTERM first (every command handles it
+# stale-blocks-ingest, api-poll, mempool-watch): SIGTERM first (every command handles it
 # for a clean checkpoint - see cli.py/ingest.py/stale_blocks.py), SIGKILL
 # after a 30s grace period if a process doesn't exit on its own. Does not
 # touch bitcoind.
@@ -60,6 +60,7 @@ stop_component() {
 stop_component rpc-ingest
 stop_component stale-blocks-ingest
 stop_component api-poll
+stop_component mempool-watch
 
 echo ""
 echo "Done. This never touches bitcoind - it's still running if it was before."

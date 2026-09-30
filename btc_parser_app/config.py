@@ -324,6 +324,64 @@ def _load_stale_blocks(raw: dict[str, Any], root: Path) -> StaleBlocksConfig:
 
 
 # =============================================================================
+# mempool_watch
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class MempoolWatchConfig:
+    """zmq_endpoint None means polling-only mode: no ZMQ subscription, the
+    reconcile pass (every reconcile_interval_seconds) is then the only way
+    new mempool txs get noticed - see rpc/mempool_watch.py."""
+
+    zmq_endpoint: str | None
+    sanctions_list_paths: tuple[Path, ...]
+    output_dir: Path
+    state_dir: Path
+    reconcile_interval_seconds: float
+    rpc_workers: int
+    forget_after_confirmations: int
+    max_confirmation_scan_blocks: int
+
+
+def _load_mempool_watch(raw: dict[str, Any], root: Path) -> MempoolWatchConfig:
+    section = _require(raw, "mempool_watch", "root")
+
+    list_paths_raw = _require(section, "sanctions_list_paths", "mempool_watch")
+    if isinstance(list_paths_raw, str):
+        list_paths_raw = [list_paths_raw]
+    if not list_paths_raw:
+        raise ConfigError("config.yaml: 'mempool_watch.sanctions_list_paths' must not be empty")
+
+    reconcile_interval_seconds = float(section.get("reconcile_interval_seconds", 300))
+    if reconcile_interval_seconds <= 0:
+        raise ConfigError("config.yaml: 'mempool_watch.reconcile_interval_seconds' must be > 0")
+
+    rpc_workers = int(section.get("rpc_workers", 4))
+    if rpc_workers < 1:
+        raise ConfigError("config.yaml: 'mempool_watch.rpc_workers' must be >= 1")
+
+    forget_after_confirmations = int(section.get("forget_after_confirmations", 6))
+    if forget_after_confirmations < 1:
+        raise ConfigError("config.yaml: 'mempool_watch.forget_after_confirmations' must be >= 1")
+
+    max_confirmation_scan_blocks = int(section.get("max_confirmation_scan_blocks", 50))
+    if max_confirmation_scan_blocks < 1:
+        raise ConfigError("config.yaml: 'mempool_watch.max_confirmation_scan_blocks' must be >= 1")
+
+    return MempoolWatchConfig(
+        zmq_endpoint=section.get("zmq_endpoint") or None,
+        sanctions_list_paths=tuple(_resolve_path(root, str(p)) for p in list_paths_raw),
+        output_dir=_resolve_path(root, _require(section, "output_dir", "mempool_watch")),
+        state_dir=_resolve_path(root, _require(section, "state_dir", "mempool_watch")),
+        reconcile_interval_seconds=reconcile_interval_seconds,
+        rpc_workers=rpc_workers,
+        forget_after_confirmations=forget_after_confirmations,
+        max_confirmation_scan_blocks=max_confirmation_scan_blocks,
+    )
+
+
+# =============================================================================
 # logging
 # =============================================================================
 
@@ -356,6 +414,7 @@ class AppConfig:
     mining_pools_dataset: MiningPoolsDatasetConfig
     rpc: RpcConfig
     stale_blocks: StaleBlocksConfig
+    mempool_watch: MempoolWatchConfig
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -379,4 +438,5 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         mining_pools_dataset=_load_mining_pools_dataset(raw, root),
         rpc=_load_rpc(raw, root),
         stale_blocks=_load_stale_blocks(raw, root),
+        mempool_watch=_load_mempool_watch(raw, root),
     )

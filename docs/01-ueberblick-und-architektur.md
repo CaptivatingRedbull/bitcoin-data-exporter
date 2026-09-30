@@ -21,11 +21,14 @@ das CSV-Dateien einlesen kann) aufbereitet:
   durchgängig minütliche Preiszeitreihe ohne separate Tagestabelle.
 
 Zusätzlich verfolgt eine dritte, unabhängige Pipeline nicht-aktive
-Chain-Tips (verwaiste/stale Blöcke) als eigene Datenquelle.
+Chain-Tips (verwaiste/stale Blöcke) als eigene Datenquelle, und eine vierte
+überwacht den Mempool des eigenen Nodes auf Transaktionen, die an eine
+sanktionierte Adresse zahlen oder von einer solchen ausgeben – ohne den
+Mempool selbst zu exportieren (Kapitel 11).
 
-## 1.2 Drei unabhängige Prozesse
+## 1.2 Vier unabhängige Prozesse
 
-Die Anwendung besteht bewusst aus **drei unabhängigen, dauerhaft
+Die Anwendung besteht bewusst aus **vier unabhängigen, dauerhaft
 laufenden Prozessen** statt einem einzigen Multithreading-Skript. Sie
 teilen sich weder Zustand noch Fehlerdomänen: Ein HTTP-429-Fehler auf der
 API-Seite legt niemals die Blockverarbeitung lahm, und ein Ausfall des
@@ -35,20 +38,26 @@ Bitcoin-Nodes hat keinen Einfluss auf die Preis-Pipeline.
 |---|---|---|---|
 | RPC-Parser | `rpc-ingest` | `btc_parser_app/rpc/ingest.py` | Holt Blöcke vom eigenen Node, flacht sie inkl. aller Transaktionen zu CSV-Zeilen ab, ordnet jeden Block anhand blockeigener Daten einem Mining-Pool zu (keine zusätzlichen Netzwerkaufrufe nötig). Reorg-sicher. |
 | Stale-Blocks-Pipeline | `stale-blocks-ingest` | `btc_parser_app/rpc/stale_blocks.py` | Separate Datenquelle für nicht-aktive Chain-Tips (`getchaintips` + das GitHub-Datenset `bitcoin-data/stale-blocks`). Unabhängig von `rpc-ingest`s eigenem Reorg-Handling. |
+| Mempool-Watch | `mempool-watch` | `btc_parser_app/rpc/mempool_watch.py` | Prüft jede Transaktion, die in den Mempool des eigenen Nodes gelangt (ZMQ `sequence` + periodischer `getrawmempool`-Abgleich), gegen eine Sanktionsliste und exportiert pro Treffer ein Ereignis je Zustandswechsel (`seen`/`confirmed`/`replaced`/`removed`/`unconfirmed`, siehe Kapitel 11). |
 | API-Poller | `api-poll` | `btc_parser_app/api/poller.py` | Pollt den mempool.space `prices`-Endpunkt minütlich, innerhalb eines Rate-Limit-Budgets (Token-Bucket), und schreibt in dieselbe `prices.csv`, die auch der einmalige Preis-Historie-Import befüllt (siehe Kapitel 6). |
 
 Jeder Prozess läuft bis `SIGTERM`/`SIGINT` (bzw. bis `api-poll` einen
 HTTP-429 erhält – dann hält der Prozess bewusst an und muss manuell neu
 gestartet werden, siehe Kapitel 9). Für einen gehärteten Linux-Betrieb
-empfiehlt es sich, jeden der drei Befehle in eine eigene systemd-Unit mit
-eigenem Log und eigener Restart-Policy (`Restart=always`) zu verpacken –
+gibt es für jeden der vier Befehle eine eigene systemd-Unit mit eigener
+Restart-Policy (`systemd/install.sh`, siehe Kapitel 2.5) –
 `start.sh`/`stop.sh` decken lokale/Dev-Umgebungen und einfache
 Dauerbetriebs-Hosts ab, starten einen abgestürzten Prozess aber nicht
 automatisch neu.
 
 ## 1.3 Punktuell auszuführende Kommandos/Skripte
 
-Neben den drei Dauerprozessen gibt es:
+Neben den vier Dauerprozessen gibt es:
+
+- `mempool-watch-check TXID [--blockhash HASH]` – prüft eine einzelne
+  Transaktion mit derselben Logik wie `mempool-watch` gegen die
+  Sanktionsliste und gibt die Treffer aus, ohne etwas zu schreiben (zum
+  Testen, siehe Kapitel 11.8).
 
 - `update-pools-dataset` – aktualisiert das Mining-Pool-Signaturdatenset
   von GitHub (normalerweise automatisch durch `rpc-ingest` erledigt, siehe
@@ -78,18 +87,18 @@ austauschen, ohne Code zu verändern (siehe Kapitel 3).
                     │  eigener Bitcoin-    │
                     │  Core-Node           │
                     └──────────┬───────────┘
-                               │ bitcoin-cli (RPC)
-              ┌────────────────┼────────────────┐
-              │                                  │
-     ┌────────▼─────────┐              ┌─────────▼──────────┐
-     │   rpc-ingest      │              │ stale-blocks-ingest │
-     │  (aktive Chain)   │              │ (nicht-aktive Tips)  │
-     └────────┬──────────┘              └─────────┬───────────┘
-              │                                    │
-     export/rpc/{blocks,transactions}/    stale_block_headers.csv
-     + state/rpc (Status-/Index-Dateien,          │
-       intern)                            bitcoin-data/stale-blocks
-                                           (GitHub-Datenset, HTTP)
+                               │ bitcoin-cli (RPC)  +  ZMQ sequence
+              ┌────────────────┼──────────────────────┬──────────────────┐
+              │                                        │                  │
+     ┌────────▼─────────┐              ┌───────────────▼────┐   ┌─────────▼─────────┐
+     │   rpc-ingest      │              │ stale-blocks-ingest │   │  mempool-watch     │
+     │  (aktive Chain)   │              │ (nicht-aktive Tips)  │   │ (Mempool vs.       │
+     └────────┬──────────┘              └─────────┬───────────┘   │  Sanktionsliste)   │
+              │                                    │               └─────────┬─────────┘
+     export/rpc/{blocks,transactions}/    stale_block_headers.csv            │
+     + state/rpc (Status-/Index-Dateien,          │              sanctioned_tx_events.csv
+       intern)                            bitcoin-data/stale-blocks   + state/mempool_watch
+                                           (GitHub-Datenset, HTTP)     (flagged.json, intern)
 
                     ┌──────────────────────┐
                     │  mempool.space API    │
