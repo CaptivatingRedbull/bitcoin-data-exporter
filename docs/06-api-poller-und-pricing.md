@@ -36,7 +36,7 @@ so abbrechen, statt sie doch noch abzusetzen.
 Das konfigurierte Budget ist 10 Anfragen/Minute (Burst 10), wird aber
 derzeit nur vom live `prices`-Poll gezogen (60s-Intervall, ~1 Anfrage/min).
 `backfill_price_gap.py` (siehe 6.6) ist ein eigenständiges Skript mit
-eigenem `--rate-limit-per-minute` und zieht **nicht** aus diesem Budget.
+eigenem `--rate-limit-per-second` und zieht **nicht** aus diesem Budget.
 
 ## 6.3 Endpunkt-Threads (`poller.py`)
 
@@ -139,10 +139,16 @@ python backfill_price_gap.py \
 - `--export-dir` – Verzeichnis für `prices.csv` und den eigenen
   Fortschritts-Checkpoint (`price_gap_backfill_state.csv`); auf
   `mempool_api.output_dir` zeigen lassen.
-- `--rate-limit-per-minute` (Default 10) – **kein** Token-Bucket, nur ein
-  flaches `time.sleep()` zwischen Anfragen: bewusst einfach gehalten, da
-  dies ein kurzer, manuell begleiteter Einmallauf ist, kein
-  Dauerbetrieb mit geteiltem Budget.
+- `--base-url` (Default `https://mempool.home.captivatingredbull.org`) –
+  der eigene mempool-Node als Datenquelle.
+- `--rate-limit-per-second` (Default 1000) – **kein** Token-Bucket, nur
+  feste Taktung zwischen Anfragen: bewusst einfach gehalten, da dies ein
+  kurzer, manuell begleiteter Einmallauf ist, kein Dauerbetrieb mit
+  geteiltem Budget. Bei Überlastung des Nodes herunterdrehen.
+- `--validation-base-url` (Default `https://mempool.space`),
+  `--validate-every` (Default 1000, `0` = aus),
+  `--validation-warn-percent` (Default 2) – Stichproben-Validierung, siehe
+  unten.
 
 Ablauf pro Schritt:
 
@@ -161,9 +167,23 @@ Ablauf pro Schritt:
    mit `EXIT_RATE_LIMITED` (75, dieselbe Konvention wie `api/poller.py`,
    siehe 6.5) – der Checkpoint bleibt exakt am letzten erfolgreichen
    Schritt stehen.
-4. Nach jedem Schritt wird der Fortschritt in
-   `<export-dir>/price_gap_backfill_state.csv` persistiert (Zeitmarke,
-   nicht das Ergebnis) – für manuelle Neustarts (siehe unten).
+4. Zeilen und Fortschritt (`<export-dir>/price_gap_backfill_state.csv`,
+   Zeitmarke, nicht das Ergebnis) werden gemeinsam gepuffert geschrieben
+   – alle 1000 Anfragen bzw. 5s sowie bei jedem Ende (fertig, Fehler,
+   429, Strg+C) – für manuelle Neustarts (siehe unten). Bei einem harten
+   Abbruch (SIGKILL, Stromausfall) wird höchstens der letzte Puffer
+   erneut abgefragt; Duplikate verhindert die `date_unix`-Prüfung.
+
+**Stichproben-Validierung:** Jeder `--validate-every`-te Datenpunkt (inkl.
+des ersten) wird zusätzlich bei der offiziellen mempool.space-Instanz
+abgefragt – nie öfter als 1 Anfrage/s; ist eine Prüfung fällig, bevor 1s
+vergangen ist, wird sie auf den nächsten Datenpunkt verschoben. Jeder
+Vergleich wird mit der USD-/EUR-Abweichung in Prozent geloggt. Liegt eine
+davon über `--validation-warn-percent`, wird die Zeile als WARNING mit dem
+Marker `PRICE_VALIDATION_WARNING` geloggt (`grep PRICE_VALIDATION_WARNING
+<export-dir>/price_gap_backfill.log`). Fehlgeschlagene Prüfanfragen
+(`PRICE_VALIDATION_FAILED`, bei 429 60s Pause) brechen den Backfill nie
+ab; die Validierung beeinflusst nie, was geschrieben wird.
 
 **Neustart-sicher (manuell, nicht als Dienst gedacht):** Ein erneuter
 Lauf mit demselben `--start-timestamp` setzt am gespeicherten Checkpoint

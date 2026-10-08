@@ -48,7 +48,7 @@ mempool_api:
   # requests can fire back-to-back before the rate limit kicks in). Only
   # the live `prices` poll below draws from this (60s interval, so ~1
   # req/min) - backfill_price_gap.py is a separate standalone script with
-  # its own --rate-limit-per-minute, not governed by this budget.
+  # its own --rate-limit-per-second, not governed by this budget.
   rate_limit:
     requests_per_minute: 10
     bucket_size: 10

@@ -63,7 +63,7 @@ effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Der
 Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10) wird
 derzeit nur vom live `prices`-Poll oben gezogen (~1 Anfrage/Minute).
 `backfill_price_gap.py` (siehe 6.6) ist ein eigenständiges Skript mit
-eigenem `--rate-limit-per-minute` und bedient sich **nicht** aus diesem
+eigenem `--rate-limit-per-second` und bedient sich **nicht** aus diesem
 Budget.
 
 `parser` muss auf eine `parse_<name>`-Funktion in
@@ -114,7 +114,7 @@ config.yaml-gesteuerten Kommandos:
   Großteil der Historie (kein eigenes Tool mehr in dieser App), und
 - `backfill_price_gap.py` (eigenständiges Skript, eigene Kommandozeilen-
   parameter: `--start-timestamp`, `--end-timestamp`, `--export-dir`,
-  `--rate-limit-per-minute`) für die verbleibende Lücke bis zum ersten
+  `--rate-limit-per-second`, `--validate-every`, …) für die verbleibende Lücke bis zum ersten
   live gepollten `prices`-Wert.
 
 Beide schreiben in dieselbe `date_unix,usd,eur`-Zeilenform in

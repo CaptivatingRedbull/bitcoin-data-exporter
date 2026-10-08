@@ -217,7 +217,7 @@ effective rate for the whole poller against that host, not per-endpoint.
 The default (10 req/min, burst of 10) is only drawn on by the live
 `prices` poll (~1 req/min at its 60s interval) - `backfill_price_gap.py`
 (see **Pricing** below) is a separate standalone script with its own
-`--rate-limit-per-minute`, not governed by this budget.
+`--rate-limit-per-second`, not governed by this budget.
 
 `endpoints` is a list of `{name, path, parser, interval_seconds}`. Each
 `parser` name must match a `parse_<name>` function registered in
@@ -268,9 +268,10 @@ the exact same `date_unix,usd,eur` shape into the same file:
   - a standalone, manually-run script (not a `run.py` subcommand, no
   config.yaml involvement) for the *short* remaining gap between where
   that Kraken import stops and where live `api-poll`/Cribl-forwarded
-  coverage picks up. It walks mempool.space's
-  `/api/v1/historical-price?currency=<c>&timestamp=<t>` endpoint one
-  minute at a time between two unix timestamps you provide:
+  coverage picks up. It walks the self-hosted mempool node's
+  (`https://mempool.home.captivatingredbull.org`, override with
+  `--base-url`) `/api/v1/historical-price?currency=<c>&timestamp=<t>`
+  endpoint one minute at a time between two unix timestamps you provide:
 
   ```sh
   python backfill_price_gap.py \
@@ -285,14 +286,24 @@ the exact same `date_unix,usd,eur` shape into the same file:
   - `--export-dir` - where `prices.csv` (and this script's own resume
     checkpoint) live; point it at the same directory as
     `mempool_api.output_dir`.
-  - `--rate-limit-per-minute` (default 10) - enforced with a flat
-    `time.sleep()` between requests, not a token bucket - this is a
-    short, manually-babysat one-off, not a shared long-running service.
-  - A 429 from mempool.space is never retried: it's logged and the script
+  - `--rate-limit-per-second` (default 1000) - enforced with fixed-interval
+    pacing between requests, not a token bucket - this is a short,
+    manually-babysat one-off, not a shared long-running service. Lower it
+    if the node can't keep up.
+  - Validation: 1 in `--validate-every` (default 1000) datapoints is also
+    fetched from the official `--validation-base-url`
+    (`https://mempool.space`, never faster than 1 req/s) and the USD/EUR
+    difference is logged. Above `--validation-warn-percent` (default 2) the
+    line is a WARNING tagged `PRICE_VALIDATION_WARNING` - `grep` the log
+    for it. Failed validation requests are tagged `PRICE_VALIDATION_FAILED`
+    and never stop the backfill. `--validate-every 0` disables it.
+  - A 429 from the data source is never retried: it's logged and the script
     exits immediately, leaving its checkpoint exactly where it stopped.
   - Safe to interrupt and re-run (manually, not as a service): progress is
-    checkpointed to `<export-dir>/price_gap_backfill_state.csv` after every
-    request, and rows already in `prices.csv` are never duplicated. Re-run
+    checkpointed to `<export-dir>/price_gap_backfill_state.csv`, flushed
+    together with the rows in batches (every 1000 requests / 5s) and on
+    every exit including Ctrl-C, and rows already in `prices.csv` are never
+    duplicated. Re-run
     the same `--start-timestamp` to resume; a different one starts fresh.
   - The endpoint snaps a requested timestamp to whatever price point
     mempool.space actually has nearest it (granularity varies with age),
