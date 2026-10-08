@@ -4,7 +4,8 @@ subcommand) since it's a manually-run one-off, not one of run.py's
 services.
 
     python backfill_price_gap.py --start-timestamp UNIX --end-timestamp UNIX \
-        --export-dir PATH [--rate-limit-per-minute N] [--currency EUR]
+        --export-dir PATH [--rate-limit-per-second N] [--validate-every N]
+        [--validation-warn-percent P] [--base-url URL] [--currency EUR]
 """
 
 from __future__ import annotations

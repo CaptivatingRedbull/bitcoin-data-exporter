@@ -16,7 +16,9 @@
   Parser-Host aus (siehe Kapitel 11.2). Ohne ZMQ läuft `mempool-watch` im
   reinen Polling-Modus.
 - Netzwerkzugriff auf `mempool.space` (HTTPS) für `api-poll` sowie für
-  `backfill_price_gap.py`, und auf `raw.githubusercontent.com` für die
+  die Stichproben-Validierung von `backfill_price_gap.py`, auf den eigenen
+  mempool-Node (`mempool.home.captivatingredbull.org`) als dessen
+  Datenquelle, und auf `raw.githubusercontent.com` für die
   Mining-Pool- und Stale-Blocks-Datensets (siehe Kapitel 6.6).
 
 ## 2.2 Einrichtung
@@ -291,4 +293,4 @@ Python-Tracebacks (siehe `btc_parser_app/cli.py:main()`).
 `backfill_price_gap.py` ist kein `run.py`-Kommando (siehe Kapitel 6.6) und
 läuft daher außerhalb dieser Tabelle: einmalig, beendet sich selbst,
 Exit-Code 0 (fertig/nichts zu tun) / 1 (Fehler) / 75 (HTTP 429, wie
-`api-poll`) / 2 (`--rate-limit-per-minute <= 0`).
+`api-poll`) / 2 (ungültige Parameter, z.B. `--rate-limit-per-second <= 0`).
