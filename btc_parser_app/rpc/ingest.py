@@ -63,6 +63,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from btc_parser_app.api.mining_pools_dataset import refresh_if_stale
 from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, RpcConfig
@@ -96,21 +98,22 @@ logger = logging.getLogger(__name__)
 def _buffer_export(
     parsed: ParsedBlock,
     index: IndexStore,
-    batch_buffers: dict[str, list[dict[str, Any]]],
+    batch_buffers: dict[str, list[Any]],
     prev_time: int | None,
 ) -> None:
-    """Stage one parsed block's rows for the next drain and its index row
-    for the next flush. Always called in height order, by the main process -
-    whether the block was parsed inline (_process_height) or by a catch-up
-    worker (_process_prefetched)."""
-    block_aggregate = parsed.aggregate
-    block_aggregate.block_event["time_since_prev_block_sec"] = (
+    """Stage one parsed block's rows/frames for the next drain and its index
+    row for the next flush. Always called in height order, by the main
+    process - whether the block was parsed inline (_process_height) or by a
+    catch-up worker (_process_prefetched). batch_buffers["blocks"] holds row
+    dicts; the other three hold one DataFrame per block (see
+    catchup.frame_from_rows)."""
+    parsed.block_event["time_since_prev_block_sec"] = (
         parsed.block_time - prev_time if prev_time is not None else None
     )
-    batch_buffers["blocks"].append(block_aggregate.block_event)
-    batch_buffers["transactions"].extend(block_aggregate.tx_events)
-    batch_buffers["inputs"].extend(block_aggregate.input_events)
-    batch_buffers["outputs"].extend(block_aggregate.output_events)
+    batch_buffers["blocks"].append(parsed.block_event)
+    for key, frame in parsed.frames.items():
+        if frame.height:
+            batch_buffers[key].append(frame)
     index.add(parsed.height, parsed.block_hash, parsed.previousblockhash)
 
 
@@ -119,7 +122,7 @@ def _process_height(
     pool_matcher: PoolMatcher | None,
     index: IndexStore,
     block_status: BlockStatusStore,
-    batch_buffers: dict[str, list[dict[str, Any]]],
+    batch_buffers: dict[str, list[Any]],
     height: int,
     prev_time: int | None,
 ) -> tuple[str, int]:
@@ -149,7 +152,7 @@ def _process_prefetched(
     parsed: ParsedBlock,
     index: IndexStore,
     block_status: BlockStatusStore,
-    batch_buffers: dict[str, list[dict[str, Any]]],
+    batch_buffers: dict[str, list[Any]],
     prev_time: int | None,
 ) -> tuple[str, int]:
     """_process_height for a block a catch-up worker already fetched and
@@ -263,21 +266,28 @@ def _recover_from_reorg(
 
 
 def _drain(
-    batch_buffers: dict[str, list[dict[str, Any]]],
+    batch_buffers: dict[str, list[Any]],
     sequencers: dict[str, PartSequencer],
     atomic: bool,
 ) -> None:
     """Write out whatever's buffered and clear the buffers. atomic=True
     writes each as a brand-new, complete part (see PartSequencer.write_atomic
     - used once caught up to the tip, one block at a time); atomic=False
-    appends to the current rotating part (used while there's backlog)."""
+    appends to the current rotating part (used while there's backlog).
+    Per-block frames are concatenated with how="vertical_relaxed" - see
+    catchup.frame_from_rows for why that writes the same bytes as one
+    DataFrame built from all of the batch's rows."""
     for key, seq in sequencers.items():
-        rows = batch_buffers[key]
-        if atomic:
-            seq.write_atomic(rows)
+        buffered = batch_buffers[key]
+        if buffered and isinstance(buffered[0], pl.DataFrame):
+            data: list[dict[str, Any]] | pl.DataFrame = pl.concat(buffered, how="vertical_relaxed")
         else:
-            seq.write_batched(rows)
-        rows.clear()
+            data = buffered
+        if atomic:
+            seq.write_atomic(data)
+        else:
+            seq.write_batched(data)
+        buffered.clear()
 
 
 def _run_one_pass(
@@ -415,7 +425,7 @@ def _run_one_pass(
             else ""
         ),
     )
-    batch_buffers: dict[str, list[dict[str, Any]]] = {key: [] for key in sequencers}
+    batch_buffers: dict[str, list[Any]] = {key: [] for key in sequencers}
     start_time = time.perf_counter()
     processed = 0
     last_processed_height = current_height

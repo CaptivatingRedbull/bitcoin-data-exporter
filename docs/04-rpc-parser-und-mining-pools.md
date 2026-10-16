@@ -495,8 +495,21 @@ denselben Schritten an wie im sequenziellen Fall
 (`_process_prefetched()` ↔ `_process_height()`, gemeinsam
 `_buffer_export()`): `time_since_prev_block_sec` setzen, Zeilen puffern,
 `index.add()`, `block_status`, Drain/Checkpoint alle `batch_size` Blöcke.
-Damit entstehen dieselben Batches, dieselben polars-Schemata pro Batch und
-damit byte-identische CSVs.
+Damit entstehen dieselben Batches und damit byte-identische CSVs.
+
+Die Worker bauen außerdem schon die polars-DataFrames für
+`transactions`/`inputs`/`outputs` eines Blocks
+(`catchup.frame_from_rows()`, exakt wie bisher mit
+`infer_schema_length=None`); der Hauptprozess hängt die Frames eines
+Batches nur noch per `pl.concat(..., how="vertical_relaxed")` aneinander
+und schreibt sie. `vertical_relaxed` hebt jede Spalte auf den Supertyp
+über den ganzen Batch (Null + Int64 → Int64, Int64 + Float64 → Float64) –
+denselben, den die zeilenweise Inferenz über alle Zeilen des Batches
+gewählt hätte –, deshalb sind die geschriebenen Bytes identisch
+(`tests/test_catchup.py::FrameEquivalenceTest`, 300 Zufalls-Batches je
+Event-Typ, plus der Ende-zu-Ende-Vergleich unten). Das Bauen der
+DataFrames aus Tausenden Zeilen-Dicts war der teuerste Schritt, der im
+seriellen Hauptprozess übrig war (siehe „Produktion“ unten).
 
 Abgrenzungen:
 
@@ -553,9 +566,9 @@ wird dann per SIGTERM beendet; gemessen werden die Höhen 579–699
 | `http` | 10 | 73,9 | 8,3× |
 
 Bei 8 Workern ist die Maschine ausgelastet (Worker + bitcoind teilen sich
-die 12 Kerne); mehr Worker bringen nichts mehr. Die nächste Grenze wäre
-der Hauptprozess (Ergebnisse entpicklen, puffern, polars-Schreiben pro
-Batch – zusammen gut 10 ms/Block), der bewusst seriell bleibt.
+die 12 Kerne); mehr Worker bringen nichts mehr. (Diese Tabelle stammt
+noch aus der Version, in der der Hauptprozess die DataFrames selbst
+gebaut hat – siehe „Produktion“.)
 
 **Gleichheit der Ausgabe.** `diff -r` über `state_dir` + `output_dir`
 (Parts, `*_part_seq.csv`, `current.csv`, `latest.csv`, `index/`) zwischen
@@ -583,9 +596,31 @@ Fehler und Ketten-Bruch.
 | polars `DataFrame` + `write_csv` (alle vier Event-Typen) | 10,2 |
 | `pickle` dumps / loads des Ergebnisses (Worker → Hauptprozess) | 3,5 / 3,6 |
 
-**Übertragbarkeit auf Produktion.** Auf Mainnet noch nicht gemessen. Der
-sequenzielle Ausgangswert passt (~9 vs. ~11 Blöcke/s bei ähnlich großen
-Blöcken); spätere Blöcke (1–2 MB, ab 2017) kosten in jedem Modus
-proportional mehr. Startwert für den Ryzen 9 5950X (16 Kerne):
-`transport: "http"`, `catchup_workers: 8`, bitcoind `rpcthreads=16` –
-die Logzeile „Progress: … blocks/s“ zeigt sofort, ob mehr Worker helfen.
+### Produktion (Mainnet, Ryzen 9 5950X, Bitcoin Core v31.1, `rpcthreads=16`)
+
+Erste Version (Hauptprozess baut die DataFrames), `http` + 8 Worker,
+5-Minuten-Mittel aus den „Progress“-Logzeilen:
+
+| | Höhe | Blöcke/s |
+|---|---|---|
+| alter Code (sequenziell) | ~320k → 339k | 10 → 6,3 |
+| `http`, 8 Worker | ~350k → 389k | 40 → 23 |
+
+Etwa Faktor 6 bei vergleichbarer Höhe, aber mit den 2015 schnell
+wachsenden Blöcken stark fallend. `top` zeigte warum: Hauptprozess bei
+~105 % CPU (ein Kern voll), bitcoind bei ~190 %, Maschine zu 84 % idle –
+der serielle Schreiber war die Grenze, nicht Worker oder Node.
+
+Kosten im Hauptprozess pro Block vorher/nachher (synthetische Blöcke,
+Batch von 20, M2 Max; „pro Worker“ = was dafür in jeden Worker wandert):
+
+| Block | Hauptprozess vorher | nachher | zusätzlich pro Worker |
+|---|---|---|---|
+| 500 Tx / ~2.300 In+Out | 9,9 ms (≤ 101 Blöcke/s) | 0,7 ms | 5,2 ms |
+| 2.000 Tx / ~9.000 In+Out | 35,5 ms (≤ 28 Blöcke/s) | 1,8 ms | 20,4 ms |
+
+Die alte Obergrenze von ~28 Blöcken/s für 2.000-Tx-Blöcke passt zu den
+~23 Blöcken/s, die in Produktion bei Höhe 389k beobachtet wurden. Danach
+skaliert die Aufholjagd mit Workern und bitcoind-CPU: auf dem 5950X
+(16 Kerne/32 Threads) `catchup_workers: 14` als Startwert und anhand von
+`top` (Worker und bitcoind ausgelastet? Maschine noch idle?) nachjustieren.

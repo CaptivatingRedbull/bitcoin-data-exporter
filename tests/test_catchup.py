@@ -24,10 +24,12 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+import polars as pl
+
 from btc_parser_app.config import RpcConfig
 from btc_parser_app.rpc import catchup, ingest
 from btc_parser_app.rpc.block_parser import aggregate_block
-from btc_parser_app.rpc.catchup import ParsedBlock, iter_parsed_blocks
+from btc_parser_app.rpc.catchup import ParsedBlock, build_parsed_block, iter_parsed_blocks
 from btc_parser_app.rpc.client import RpcCliError
 from btc_parser_app.rpc.part_writer import PartSequencer
 from btc_parser_app.rpc.reorg_state import BlockStatusStore, IndexStore
@@ -159,8 +161,7 @@ def fake_parse(height: int, prev_override: str | None = None) -> ParsedBlock:
     block = make_block(height)
     if prev_override is not None:
         block["previousblockhash"] = prev_override
-    aggregate = aggregate_block(block, BASE_CONFIG, None)
-    return ParsedBlock(height, block["hash"], str(block.get("previousblockhash") or ""), int(block["time"]), aggregate)
+    return build_parsed_block(block, BASE_CONFIG, None)
 
 
 # --- worker-side fakes (must be module-level: pickled into spawned workers) ---
@@ -356,6 +357,40 @@ class ParallelCatchupTest(unittest.TestCase):
         seq.run(tip=200)
         seq.run(tip=210)
         self.assertSameFiles(seq, par)
+
+
+class FrameEquivalenceTest(unittest.TestCase):
+    """ingest._drain writes pl.concat(per-block frames, how="vertical_relaxed")
+    where the writer used to build one DataFrame from all of a batch's row
+    dicts. Same bytes, for every event type, for many random batches -
+    including batches where a column is all-null in some blocks (coinbase-
+    only blocks, missing prevouts/fees) and populated in others."""
+
+    def test_concat_of_block_frames_writes_same_csv_as_batch_rows(self) -> None:
+        aggregates = [aggregate_block(make_block(h), BASE_CONFIG, None) for h in range(300)]
+        rng = random.Random(7)
+        for _ in range(300):
+            n = rng.randint(1, 30)
+            batch = rng.sample(aggregates, n)
+            for attr in ("tx_events", "input_events", "output_events"):
+                per_block = [getattr(a, attr) for a in batch]
+                old = pl.DataFrame([r for rows in per_block for r in rows], infer_schema_length=None)
+                new = pl.concat([catchup.frame_from_rows(rows) for rows in per_block], how="vertical_relaxed")
+                self.assertEqual(old.write_csv(), new.write_csv(), f"{attr}, batch of {n}")
+
+    def test_all_null_column_in_whole_batch(self) -> None:
+        rows_a = [{"a": 1, "b": None}, {"a": 2, "b": None}]
+        rows_b = [{"a": None, "b": None}]
+        old = pl.DataFrame(rows_a + rows_b, infer_schema_length=None)
+        new = pl.concat([catchup.frame_from_rows(rows_a), catchup.frame_from_rows(rows_b)], how="vertical_relaxed")
+        self.assertEqual(old.write_csv(), new.write_csv())
+
+    def test_int_and_float_blocks_widen_like_row_inference(self) -> None:
+        rows_a = [{"x": 1}, {"x": None}]
+        rows_b = [{"x": 2.5}]
+        old = pl.DataFrame(rows_a + rows_b, infer_schema_length=None)
+        new = pl.concat([catchup.frame_from_rows(rows_a), catchup.frame_from_rows(rows_b)], how="vertical_relaxed")
+        self.assertEqual(old.write_csv(), new.write_csv())
 
 
 class IterParsedBlocksTest(unittest.TestCase):

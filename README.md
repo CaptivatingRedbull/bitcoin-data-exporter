@@ -370,7 +370,10 @@ keep working, and the output (parts, `*_part_seq.csv`, `current.csv`,
   processes (`rpc/catchup.py`) while the main process keeps consuming them
   strictly in height order - row buffers, `index/`, `block_status.csv`,
   parts and `current.csv` are still written by one process, in the same
-  order and at the same `batch_size` boundaries as before. Only used for
+  order and at the same `batch_size` boundaries as before. The workers
+  also build each block's transactions/inputs/outputs DataFrames, so the
+  writer only concatenates (`how="vertical_relaxed"`, which yields the
+  same per-batch column types and therefore the same bytes) and writes. Only used for
   heights at least `max_reorg_depth` below the tip (blocks that deep are
   already treated as final by reorg recovery); the last stretch before the
   tip and all tip-following stay sequential. If a prefetched block ever
@@ -395,8 +398,13 @@ method and numbers in docs/04, section 4.14):
 
 Every run's `state_dir` + `output_dir` was byte-identical to the old code's
 (`diff -r`), including a run that resumed an old-code state dir stopped
-mid-catch-up. Not yet measured on mainnet: on the 5950X, start with
-`transport: "http"`, `catchup_workers: 8` and bitcoind `rpcthreads=16`.
+mid-catch-up. These numbers predate moving DataFrame building into the
+workers. On mainnet that first version reached ~40 -> 23 blocks/s at
+heights 350k -> 389k (old code: ~6 at 339k) with the single writer process
+pegged at one core - which moving the DataFrames out removes (35 -> 2 ms
+of writer time per 2,000-tx block; see docs/04, 4.14). On the 5950X, use
+`transport: "http"`, `catchup_workers: 14`, bitcoind `rpcthreads=16`, and
+tune by `top`.
 
 `batch_size` (default 20) controls how many blocks accumulate between
 `current.csv` checkpoint log lines during backlog catch-up - every pass of

@@ -211,8 +211,9 @@ die Ausgabe (Parts, `*_part_seq.csv`, `current.csv`, `index/`,
   die übrigen Dienste einstellen.
 
 Empfohlen für die Aufholjagd: `transport: "http"` und `catchup_workers`
-etwa bei der Hälfte der physischen Kerne (bitcoind braucht für
-`getblock … 3` selbst CPU). Messwerte: Kapitel 4.14.
+knapp unter der Zahl der physischen Kerne (bitcoind braucht für
+`getblock … 3` selbst CPU) – auf dem Ryzen 9 5950X 14 als Startwert.
+Messwerte: Kapitel 4.14.
 
 ## 3.6 `stale_blocks`
 

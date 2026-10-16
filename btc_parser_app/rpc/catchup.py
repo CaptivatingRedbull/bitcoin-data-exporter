@@ -27,11 +27,13 @@ import signal
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ProcessPoolExecutor
-from typing import NamedTuple
+from typing import Any, NamedTuple
+
+import polars as pl
 
 from btc_parser_app.common.logging_setup import _DATEFMT, _FORMAT
 from btc_parser_app.config import RpcConfig
-from btc_parser_app.rpc.block_parser import BlockAggregate, aggregate_block
+from btc_parser_app.rpc.block_parser import aggregate_block
 from btc_parser_app.rpc.client import get_block, get_block_hash
 from btc_parser_app.rpc.mining_pools import PoolMatcher
 
@@ -49,23 +51,54 @@ class ParsedBlock(NamedTuple):
     block_hash: str
     previousblockhash: str
     block_time: int
-    aggregate: BlockAggregate
+    # The one blocks.csv row, still a dict: time_since_prev_block_sec is left
+    # None here and filled in by the (in-order) caller, since it depends on
+    # the previous block.
+    block_event: dict[str, Any]
+    # transactions/inputs/outputs rows of this block, already turned into
+    # DataFrames. Building them from thousands of row dicts was the most
+    # expensive thing the single writer process did per block; done here,
+    # it runs in the catch-up workers instead. See frame_from_rows for why
+    # the CSV bytes stay identical.
+    frames: dict[str, pl.DataFrame]
+
+
+def frame_from_rows(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    """One block's rows of one event type as a DataFrame, typed exactly the
+    way PartSequencer has always typed a whole batch:
+    infer_schema_length=None. ingest._drain then pl.concat()s a batch of
+    these with how="vertical_relaxed", which lifts each column to the
+    supertype across the batch (Null + Int64 -> Int64, Int64 + Float64 ->
+    Float64, ...) - the same supertype row-wise inference over the whole
+    batch would have picked - so write_csv() produces the same bytes as
+    building one DataFrame from all of the batch's rows (verified by
+    tests/test_catchup.py's FrameEquivalenceTest)."""
+    return pl.DataFrame(rows, infer_schema_length=None)
 
 
 def parse_block(
     rpc_config: RpcConfig, pool_matcher: PoolMatcher | None, block_hash: str
 ) -> ParsedBlock:
-    """getblock <hash> 3 -> exportable rows. time_since_prev_block_sec is
-    left None on the block event: it depends on the previous block, which
-    the (in-order) caller fills in."""
-    block = get_block(rpc_config, block_hash, verbosity=3)
+    """getblock <hash> 3 -> exportable rows/frames."""
+    return build_parsed_block(get_block(rpc_config, block_hash, verbosity=3), rpc_config, pool_matcher)
+
+
+def build_parsed_block(
+    block: dict[str, Any], rpc_config: RpcConfig, pool_matcher: PoolMatcher | None
+) -> ParsedBlock:
+    """A getblock <hash> 3 payload -> ParsedBlock (no RPC)."""
     aggregate = aggregate_block(block, rpc_config, pool_matcher)
     return ParsedBlock(
         height=int(block["height"]),
-        block_hash=block_hash,
+        block_hash=str(block["hash"]),
         previousblockhash=str(block.get("previousblockhash") or ""),
         block_time=int(aggregate.block_event["time"]),
-        aggregate=aggregate,
+        block_event=aggregate.block_event,
+        frames={
+            "transactions": frame_from_rows(aggregate.tx_events),
+            "inputs": frame_from_rows(aggregate.input_events),
+            "outputs": frame_from_rows(aggregate.output_events),
+        },
     )
 
 
