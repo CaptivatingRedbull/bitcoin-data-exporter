@@ -44,7 +44,10 @@ Loop, per pass:
    skipping any height whose exact blockhash is already in index/ (so a
    block that flips canonical -> noncanonical -> canonical is never
    exported twice), and flipping block_status.csv back to canonical=true
-   wherever it has an entry.
+   wherever it has an entry. With rpc.catchup_workers > 1, heights at
+   least rpc.max_reorg_depth below the tip are fetched + parsed ahead by a
+   process pool (rpc/catchup.py) but still applied here one height at a
+   time, in order, exactly like the sequential path.
 
 See btc_parser_app.rpc.reorg_state for the state files this reads/writes,
 and rpc/part_writer.py for how state_dir/output_dir's blocks/transactions
@@ -53,24 +56,27 @@ parts are written and handed off.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
-from decimal import Decimal
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from btc_parser_app.api.mining_pools_dataset import refresh_if_stale
 from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, RpcConfig
-from btc_parser_app.rpc.block_parser import aggregate_block
+from btc_parser_app.rpc.catchup import (
+    PREFETCH_PER_WORKER,
+    ParsedBlock,
+    iter_parsed_blocks,
+    parse_block,
+)
 from btc_parser_app.rpc.client import (
     RpcCliError,
     get_block_count,
     get_block_hash,
     get_block_header,
-    get_block_verbose,
 )
 from btc_parser_app.rpc.mining_pools import PoolMatcher, load_pool_matcher
 from btc_parser_app.rpc.part_writer import PartSequencer
@@ -85,6 +91,27 @@ from btc_parser_app.rpc.reorg_state import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _buffer_export(
+    parsed: ParsedBlock,
+    index: IndexStore,
+    batch_buffers: dict[str, list[dict[str, Any]]],
+    prev_time: int | None,
+) -> None:
+    """Stage one parsed block's rows for the next drain and its index row
+    for the next flush. Always called in height order, by the main process -
+    whether the block was parsed inline (_process_height) or by a catch-up
+    worker (_process_prefetched)."""
+    block_aggregate = parsed.aggregate
+    block_aggregate.block_event["time_since_prev_block_sec"] = (
+        parsed.block_time - prev_time if prev_time is not None else None
+    )
+    batch_buffers["blocks"].append(block_aggregate.block_event)
+    batch_buffers["transactions"].extend(block_aggregate.tx_events)
+    batch_buffers["inputs"].extend(block_aggregate.input_events)
+    batch_buffers["outputs"].extend(block_aggregate.output_events)
+    index.add(parsed.height, parsed.block_hash, parsed.previousblockhash)
 
 
 def _process_height(
@@ -110,25 +137,34 @@ def _process_height(
         # block (hundreds of thousands of lines) - the per-batch "Progress:"
         # line below already gives INFO-level visibility.
         logger.debug("Parsing block %d (%s)...", height, block_hash)
-        raw_json = get_block_verbose(rpc_config, block_hash, verbosity=3)
-        # Decimal preserves exact BTC amounts until conversion to satoshis.
-        block = json.loads(raw_json, parse_float=Decimal)
-
-        block_aggregate = aggregate_block(block, rpc_config, pool_matcher)
-        block_event = block_aggregate.block_event
-        block_time = int(block_event["time"])
-        block_event["time_since_prev_block_sec"] = (
-            block_time - prev_time if prev_time is not None else None
-        )
-
-        batch_buffers["blocks"].append(block_event)
-        batch_buffers["transactions"].extend(block_aggregate.tx_events)
-        batch_buffers["inputs"].extend(block_aggregate.input_events)
-        batch_buffers["outputs"].extend(block_aggregate.output_events)
-        index.add(height, block_hash, str(block.get("previousblockhash") or ""))
+        parsed = parse_block(rpc_config, pool_matcher, block_hash)
+        _buffer_export(parsed, index, batch_buffers, prev_time)
+        block_time = parsed.block_time
 
     block_status.set_canonical_if_present(height, block_hash, True)
     return block_hash, block_time
+
+
+def _process_prefetched(
+    parsed: ParsedBlock,
+    index: IndexStore,
+    block_status: BlockStatusStore,
+    batch_buffers: dict[str, list[dict[str, Any]]],
+    prev_time: int | None,
+) -> tuple[str, int]:
+    """_process_height for a block a catch-up worker already fetched and
+    parsed (see rpc/catchup.py) - same index/block_status/buffer effects.
+    The worker parsed it before knowing whether it needs exporting; an
+    already-indexed one is just dropped here (rare during catch-up: only the
+    few blocks between the last index flush and a crash/restart)."""
+    if index.needs_export(parsed.block_hash):
+        _buffer_export(parsed, index, batch_buffers, prev_time)
+    else:
+        logger.debug(
+            "Block %d (%s) already indexed - skipping export.", parsed.height, parsed.block_hash
+        )
+    block_status.set_canonical_if_present(parsed.height, parsed.block_hash, True)
+    return parsed.block_hash, parsed.block_time
 
 
 def _recover_from_reorg(
@@ -345,12 +381,39 @@ def _run_one_pass(
     # confirmation margin", not "permanently stuck in batched mode".
     atomic_mode = (latest_height - current_height) <= max(rpc_config.reorg_confirmations, 1)
 
+    # Parallel catch-up (rpc.catchup_workers > 1, see rpc/catchup.py): blocks
+    # at least max_reorg_depth below the tip - deeper than reorg recovery is
+    # ever willing to walk back, i.e. final as far as this app is concerned -
+    # are fetched and parsed by a process pool ahead of this loop, which
+    # still consumes them one height at a time, in order, with the exact same
+    # buffering/drain/checkpoint steps below. Everything shallower (the last
+    # max_reorg_depth - reorg_confirmations blocks of a catch-up pass, and
+    # all of steady-state tip-following) stays sequential, fetched right
+    # before it's processed, as before.
+    parallel_end = min(latest_height, tip - rpc_config.max_reorg_depth)
+    workers = rpc_config.catchup_workers
+    prefetched: Iterator[ParsedBlock] | None = None
+    if (
+        workers > 1
+        and not atomic_mode
+        and parallel_end - current_height > PREFETCH_PER_WORKER * workers
+    ):
+        prefetched = iter_parsed_blocks(
+            rpc_config, pool_matcher, range(current_height + 1, parallel_end + 1), workers
+        )
+
     logger.info(
         "Parsing height %d through %d (%d blocks)%s...",
         current_height + 1,
         latest_height,
         latest_height - current_height,
-        " - caught up, writing one part per block" if atomic_mode else "",
+        " - caught up, writing one part per block"
+        if atomic_mode
+        else (
+            f" - heights up to {parallel_end} with {workers} catch-up workers"
+            if prefetched is not None
+            else ""
+        ),
     )
     batch_buffers: dict[str, list[dict[str, Any]]] = {key: [] for key in sequencers}
     start_time = time.perf_counter()
@@ -358,40 +421,72 @@ def _run_one_pass(
     last_processed_height = current_height
     last_hash = current_hash
 
-    for height in range(current_height + 1, latest_height + 1):
-        if stop.is_set():
-            break
+    try:
+        for height in range(current_height + 1, latest_height + 1):
+            if stop.is_set():
+                break
 
-        last_hash, block_time = _process_height(
-            rpc_config, pool_matcher, index, block_status, batch_buffers, height, prev_time
-        )
-        prev_time = block_time
-        last_processed_height = height
-        processed += 1
-
-        if atomic_mode or processed % rpc_config.batch_size == 0:
-            _drain(batch_buffers, sequencers, atomic=atomic_mode)
-            index.flush()
-            # block_status is flushed before the pointer is advanced: its
-            # entries are idempotent to redo (set_canonical_if_present() is a
-            # safe no-op/overwrite on replay), so flushing it first means a
-            # crash between the two can never leave current.csv pointing past
-            # a height whose reattached canonical=True flip never made it to
-            # disk - the worst case is instead a harmless re-check on restart.
-            block_status.flush()
-            write_pointer(current_path, last_processed_height, last_hash)
-            if atomic_mode:
-                logger.info("Exported block %d (%s) as its own part.", height, last_hash)
-            else:
-                elapsed = time.perf_counter() - start_time
-                bps = processed / elapsed if elapsed > 0 else 0
-                logger.info(
-                    "Progress: height %d/%d (%d behind tip), %.2f blocks/s",
-                    last_processed_height,
-                    latest_height,
-                    tip - last_processed_height,
-                    bps,
+            if prefetched is not None and height <= parallel_end:
+                parsed = next(prefetched)
+                if last_hash is not None and parsed.previousblockhash != last_hash:
+                    # The chain changed underneath the prefetch window even
+                    # at this depth. Don't export anything built on it: end
+                    # the pass here (checkpointing what's done), and let the
+                    # next pass's current-vs-live hash check run the normal
+                    # reorg recovery.
+                    logger.warning(
+                        "Block %d (%s) does not build on %s - ending the pass at height %d "
+                        "so the next one re-checks the active chain.",
+                        height,
+                        parsed.block_hash,
+                        last_hash,
+                        last_processed_height,
+                    )
+                    break
+                last_hash, block_time = _process_prefetched(
+                    parsed, index, block_status, batch_buffers, prev_time
                 )
+            else:
+                last_hash, block_time = _process_height(
+                    rpc_config, pool_matcher, index, block_status, batch_buffers, height, prev_time
+                )
+            prev_time = block_time
+            last_processed_height = height
+            processed += 1
+            if prefetched is not None and height == parallel_end:
+                # Parallel range done - free the workers now rather than at
+                # the end of the (sequential) rest of the pass.
+                prefetched.close()
+                prefetched = None
+
+            if atomic_mode or processed % rpc_config.batch_size == 0:
+                _drain(batch_buffers, sequencers, atomic=atomic_mode)
+                index.flush()
+                # block_status is flushed before the pointer is advanced: its
+                # entries are idempotent to redo (set_canonical_if_present() is a
+                # safe no-op/overwrite on replay), so flushing it first means a
+                # crash between the two can never leave current.csv pointing past
+                # a height whose reattached canonical=True flip never made it to
+                # disk - the worst case is instead a harmless re-check on restart.
+                block_status.flush()
+                write_pointer(current_path, last_processed_height, last_hash)
+                if atomic_mode:
+                    logger.info("Exported block %d (%s) as its own part.", height, last_hash)
+                else:
+                    elapsed = time.perf_counter() - start_time
+                    bps = processed / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        "Progress: height %d/%d (%d behind tip), %.2f blocks/s",
+                        last_processed_height,
+                        latest_height,
+                        tip - last_processed_height,
+                        bps,
+                    )
+    finally:
+        if prefetched is not None:
+            # Stops the worker pool early: a stop request, a chain mismatch,
+            # or an exception (e.g. RpcCliError) on its way to run_rpc_ingest.
+            prefetched.close()
 
     _drain(batch_buffers, sequencers, atomic=atomic_mode)
     index.flush()

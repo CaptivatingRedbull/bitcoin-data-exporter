@@ -9,7 +9,8 @@ Kommando: `rpc-ingest` · Einstiegspunkt: `btc_parser_app/rpc/ingest.py::run_rpc
 | Modul | Aufgabe |
 |---|---|
 | `rpc/ingest.py` | Hauptschleife: Katch-up + Tip-Following + Reorg-Erkennung/-Behebung. |
-| `rpc/client.py` | Dünner `bitcoin-cli`-Subprozess-Wrapper mit Retry/Timeout. |
+| `rpc/client.py` | RPC-Client mit Retry/Timeout: `bitcoin-cli`-Subprozess oder direktes JSON-RPC über HTTP (`rpc.transport`). |
+| `rpc/catchup.py` | `parse_block()` (getblock → Zeilen) und der Prozess-Pool, der Blöcke während der Aufholjagd vorab holt und parst (`rpc.catchup_workers`) – siehe 4.14. |
 | `rpc/block_parser.py` | Wandelt ein `getblock verbosity=3`-JSON in flache Block-/Transaktions-/Input-/Output-Zeilen um. |
 | `rpc/mining_pools.py` | Mining-Pool-Zuordnung (Tag- und Adressabgleich). |
 | `rpc/reorg_state.py` | Zustandsdateien: `index/`, `current.csv`, `latest.csv`, `block_status.csv`, `reorg/`. |
@@ -61,6 +62,11 @@ sicher erneut geparst wird).
      werden übersprungen, nicht erneut exportiert).
    - **Abweichung** → ein Reorg hat bereits verarbeitete Daten erreicht,
      siehe 4.4.
+   Mit `rpc.catchup_workers > 1` werden dabei alle Höhen, die mindestens
+   `rpc.max_reorg_depth` unter dem Tip liegen, von einem Prozess-Pool
+   vorab geholt und geparst – die Schleife selbst übernimmt sie trotzdem
+   eine Höhe nach der anderen, mit exakt denselben Schritten 4–6
+   (siehe 4.14).
 4. Für jede verarbeitete Höhe: `block_status.set_canonical_if_present()`
    aufrufen (flippt eine Höhe, die zuvor durch einen Reorg
    non-canonical markiert wurde, zurück auf canonical, sobald sie erneut
@@ -199,15 +205,27 @@ ist), beginnt sie einen frischen Part unter `state_dir`, statt zu
 versuchen, an eine bereits nach `output_dir` verschobene (und
 möglicherweise dort schon gelöschte) Datei anzuhängen.
 
-## 4.7 `bitcoin-cli`-Aufrufe (`rpc/client.py`)
+## 4.7 RPC-Aufrufe (`rpc/client.py`)
 
-Bewusst ein Subprozess-Wrapper um `bitcoin-cli` statt eines direkten
-JSON-RPC/HTTP-Clients, damit transparent dieselbe Auth-Methode greift,
-die der Betreiber auch interaktiv nutzt (Cookie-Datei, `bitcoin.conf`,
-lokal konfigurierter `bitcoin-cli`-Alias). `rpc.extra_args` und
-`RpcConfig.auth_args()` erweitern dies für entfernte Nodes.
+Zwei Transportwege, gewählt über `rpc.transport` (Kapitel 3.5):
 
-Jeder Aufruf geht durch `run_cli()`: Bei einem fehlgeschlagenen Aufruf
+- **`cli`** (Standard): ein Subprozess-Wrapper um `bitcoin-cli`, damit
+  transparent dieselbe Auth-Methode greift, die der Betreiber auch
+  interaktiv nutzt (Cookie-Datei, `bitcoin.conf`, lokal konfigurierter
+  `bitcoin-cli`-Alias). `rpc.extra_args` und `RpcConfig.auth_args()`
+  erweitern dies für entfernte Nodes.
+- **`http`**: direktes JSON-RPC über eine offen gehaltene HTTP-Verbindung
+  je Prozess und Thread. Endpunkt/Cookie-Datei werden aus `extra_args`
+  abgeleitet (oder `rpc.http_url`/`rpc.cookie_file`). Spart pro Block zwei
+  Prozessstarts und den Umweg über `bitcoin-cli`s eigenes JSON-Parsen und
+  -Pretty-Printen – bei großen `getblock … 3`-Antworten der größte
+  Einzelposten (siehe 4.14).
+
+Beide liefern dieselben Werte: das JSON-Ergebnis von bitcoind, Beträge
+auf Wunsch als `Decimal` (beide Wege tragen denselben UniValue-Zahlentext).
+
+Jeder Aufruf läuft durch dieselbe Retry-Logik (`run_cli()` bzw. ihr
+HTTP-Gegenstück): Bei einem fehlgeschlagenen Aufruf
 (Exit-Code ≠ 0, Timeout, kurzzeitig unerreichbare Binary) wird bis zu
 `rpc.max_cli_retries`-mal wiederholt, mit `rpc.cli_retry_backoff_seconds`
 Wartezeit dazwischen. Nach Ausschöpfen aller Versuche wird `RpcCliError`
@@ -222,7 +240,7 @@ Verwendete RPC-Aufrufe:
 |---|---|---|
 | `get_block_count` | `getblockcount` | Aktueller Node-Tip. |
 | `get_block_hash` | `getblockhash <height>` | Hash zu einer Höhe. |
-| `get_block_verbose` | `getblock <hash> 3` | Voller Block inkl. aller Transaktionen (verbosity=3). |
+| `get_block` | `getblock <hash> 3` | Voller Block inkl. aller Transaktionen (verbosity=3), geparst mit `Decimal` für alle Beträge. |
 | `get_block_header` | `getblockheader <hash>` | Nur Header-Felder (ohne die txid-Liste, die `getblock <hash> 1` mitliefern würde) – für `time`/`previousblockhash` in der Reorg-Logik. |
 | `get_block_header_raw` | `getblockheader <hash> false` | Rohe 80-Byte-Header-Bytes (hex), für die Stale-Blocks-Pipeline (Kapitel 5). |
 | `get_chain_tips` | `getchaintips` | Alle bekannten Chain-Tips, für die Stale-Blocks-Pipeline. |
@@ -453,3 +471,121 @@ Ein installierter Signal-Handler (`common/stop_signal.py::install_stop_signal()`
 nach jedem Durchlauf geprüft wird – ein `kill`/Strg+C (oder `stop.sh`)
 landet dadurch immer auf einem sauberen `current.csv`-Checkpoint statt
 mitten im Schreiben abgebrochen zu werden.
+
+Die Worker-Prozesse der parallelen Aufholjagd (4.14) ignorieren
+`SIGTERM`/`SIGINT` – systemd schickt das Signal an die ganze Control-Group,
+Strg+C an die ganze Prozessgruppe. Nur der Hauptprozess reagiert: Er
+übernimmt den aktuellen Block, schreibt den Checkpoint und beendet den
+Pool selbst (noch nicht begonnene Aufträge werden verworfen, laufende
+dauern höchstens einen `getblock`-Aufruf).
+
+## 4.14 Parallele Aufholjagd (`rpc/catchup.py`) und Benchmark
+
+Sequenziell kostet jeder Block: `getblockhash` und `getblock <hash> 3`
+(je ein `bitcoin-cli`-Prozess), `json.loads(parse_float=Decimal)`,
+`aggregate_block()`, dann das Schreiben über polars – alles auf einem
+Kern, während Node und Platte größtenteils warten.
+
+Mit `rpc.catchup_workers = N > 1` erledigen N Worker-Prozesse (gestartet
+per `spawn`, nicht `fork` – polars' Thread-Pool im Hauptprozess verträgt
+kein `fork`) genau diesen Teil – `getblockhash` + `parse_block()` – für bis
+zu `4 × N` Höhen im Voraus. `iter_parsed_blocks()` gibt die Ergebnisse
+**strikt in Höhen-Reihenfolge** zurück; der Hauptprozess wendet sie mit
+denselben Schritten an wie im sequenziellen Fall
+(`_process_prefetched()` ↔ `_process_height()`, gemeinsam
+`_buffer_export()`): `time_since_prev_block_sec` setzen, Zeilen puffern,
+`index.add()`, `block_status`, Drain/Checkpoint alle `batch_size` Blöcke.
+Damit entstehen dieselben Batches, dieselben polars-Schemata pro Batch und
+damit byte-identische CSVs.
+
+Abgrenzungen:
+
+- **Nur tief unter dem Tip**: Höhen `≤ tip − max_reorg_depth`. Alles
+  darüber (das letzte Stück einer Aufholjagd sowie Tip-Following und
+  atomarer Modus) läuft unverändert sequenziell. Ein Pool wird nur
+  gestartet, wenn der parallele Bereich größer als das Vorab-Fenster
+  (`4 × N`) ist.
+- **Kettenprüfung**: Passt `previousblockhash` eines vorab geholten Blocks
+  nicht zum zuletzt übernommenen Hash, wird nichts davon exportiert; der
+  Durchlauf endet mit Checkpoint, und der nächste Durchlauf führt die
+  normale Reorg-Erkennung (4.4) aus.
+- **Fehler**: Ein `RpcCliError` eines Workers wird erst an seiner Höhe im
+  Hauptprozess ausgelöst – nachdem alle niedrigeren Höhen übernommen
+  wurden, genau wie sequenziell. `run_rpc_ingest()` behandelt ihn wie
+  bisher (`index.discard_pending()`, warten, neuer Durchlauf).
+- **Bereits indizierte Blöcke** holt ein Worker trotzdem; der Hauptprozess
+  verwirft sie (kommt in der Aufholjagd nur für die wenigen Blöcke
+  zwischen letztem Index-Flush und einem Absturz vor).
+
+Bewusst **nicht** umgesetzt: `orjson` statt `json` – es kann Zahlen nicht
+als `Decimal` liefern, und das Parsen macht nach dem Wechsel auf HTTP nur
+noch ~8 ms von ~60 ms pro Block aus (siehe Profil unten); den
+Präzisionsbeweis für einen Float-Umweg wäre das nicht wert. Ebenso kein
+gebündeltes `getblockhash`: über HTTP kostet es < 1 ms und wird von den
+Workern ohnehin parallel geholt.
+
+### Benchmark
+
+**Aufbau.** Eigener regtest-Node (Bitcoin Core v31.1, `txindex=1`,
+`rpcthreads=16`) auf demselben Rechner (Apple M2 Max, 12 Kerne, NVMe). Die
+Chain hat 796 Blöcke: Höhe 0–545 nahezu leer, Höhe 546–796 je ~500
+Transaktionen / ~1.000 Inputs / ~2.000 Outputs / ~250 kB, gemischte
+Skripttypen (P2PKH, P2SH-P2WPKH, P2WPKH, P2TR, OP_RETURN) – vergleichbar
+mit Mainnet um Höhe 300k, wo in Produktion sequenziell ~11 Blöcke/s
+gemessen wurden. Jeder Lauf startet `run.py rpc-ingest` mit leerem
+`state_dir`/`output_dir`, holt bis `tip − reorg_confirmations` auf und
+wird dann per SIGTERM beendet; gemessen werden die Höhen 579–699
+(große Blöcke, alle im parallelen Bereich `≤ tip − max_reorg_depth`),
+über Zeitstempel der `current.csv`-Checkpoints. `batch_size` 20,
+`reorg_confirmations` 6, `max_reorg_depth` 100. Der alte Code wurde per
+`git archive` des Stands vor dieser Änderung ausgeführt.
+
+| `transport` | `catchup_workers` | Blöcke/s | Faktor |
+|---|---|---|---|
+| alter Code (`cli`) | – | 8,9 | 1,0× |
+| `cli` | 1 | 8,9 | 1,0× |
+| `http` | 1 | 17,2 | 1,9× |
+| `cli` | 8 | 49,6 | 5,6× |
+| `http` | 2 | 32,1 | 3,6× |
+| `http` | 4 | 59,2 | 6,7× |
+| `http` | 6 | 73,2 | 8,2× |
+| `http` | 8 | **79,3** | **8,9×** |
+| `http` | 10 | 73,9 | 8,3× |
+
+Bei 8 Workern ist die Maschine ausgelastet (Worker + bitcoind teilen sich
+die 12 Kerne); mehr Worker bringen nichts mehr. Die nächste Grenze wäre
+der Hauptprozess (Ergebnisse entpicklen, puffern, polars-Schreiben pro
+Batch – zusammen gut 10 ms/Block), der bewusst seriell bleibt.
+
+**Gleichheit der Ausgabe.** `diff -r` über `state_dir` + `output_dir`
+(Parts, `*_part_seq.csv`, `current.csv`, `latest.csv`, `index/`) zwischen
+dem alten Code und **jedem** Lauf der Tabelle: byte-identisch. Ebenso
+byte-identisch: ein mit altem Code bis Höhe 640 gelaufener und dann
+gestoppter `state_dir`, einmal mit altem Code und einmal mit `http` + 8
+Workern fortgesetzt; und ein mit `http` + 8 Workern per SIGTERM
+gestoppter Lauf (Stopp nach 0,5 s, Exit-Code 0, keine verwaisten
+Worker – auch bei SIGTERM an die ganze Prozessgruppe wie unter systemd),
+fortgesetzt mit altem bzw. neuem Code. Die Unit-Tests
+(`tests/test_catchup.py`) prüfen dasselbe gegen eine synthetische Chain,
+inklusive atomarem Modus, Stopp mitten im parallelen Bereich, Worker-
+Fehler und Ketten-Bruch.
+
+**Profil pro Block** (gleiche Blöcke, Mittel über 40 Blöcke):
+
+| Schritt | ms/Block |
+|---|---|
+| `bitcoin-cli getblock <hash> 3` (Subprozess inkl. Node-Zeit) | 80 |
+| `getblock` über HTTP inkl. `json.loads(parse_float=Decimal)` | 42 |
+| `bitcoin-cli getblockhash` / über HTTP | 9,8 / 0,7 |
+| `json.loads(parse_float=Decimal)` des `bitcoin-cli`-Texts | 8,1 |
+| `orjson.loads` (nur Floats – zum Vergleich) | 3,4 |
+| `aggregate_block()` | 10,7 |
+| polars `DataFrame` + `write_csv` (alle vier Event-Typen) | 10,2 |
+| `pickle` dumps / loads des Ergebnisses (Worker → Hauptprozess) | 3,5 / 3,6 |
+
+**Übertragbarkeit auf Produktion.** Auf Mainnet noch nicht gemessen. Der
+sequenzielle Ausgangswert passt (~9 vs. ~11 Blöcke/s bei ähnlich großen
+Blöcken); spätere Blöcke (1–2 MB, ab 2017) kosten in jedem Modus
+proportional mehr. Startwert für den Ryzen 9 5950X (16 Kerne):
+`transport: "http"`, `catchup_workers: 8`, bitcoind `rpcthreads=16` –
+die Logzeile „Progress: … blocks/s“ zeigt sofort, ob mehr Worker helfen.

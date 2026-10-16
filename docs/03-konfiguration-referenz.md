@@ -141,6 +141,10 @@ Konfiguration für `rpc-ingest` (`bitcoin-cli`-Seite).
 | `max_cli_retries` | int (≥0) | `3` | Wiederholungen pro `bitcoin-cli`-Aufruf. |
 | `cli_retry_backoff_seconds` | float (≥0) | `5` | Wartezeit zwischen `bitcoin-cli`-Wiederholungen. |
 | `cli_timeout_seconds` | float (>0) | `30` | Timeout pro `bitcoin-cli`-Aufruf. |
+| `transport` | `"cli"` \| `"http"` | `"cli"` | Wie mit bitcoind gesprochen wird: `bitcoin-cli`-Subprozess pro Aufruf oder direktes JSON-RPC über HTTP. Retry/Timeout (die drei Zeilen darüber) gelten für beide. Siehe unten. |
+| `http_url` | string \| null | `null` | Nur bei `transport: "http"`: Endpunkt, z. B. `http://127.0.0.1:8332`. Leer = aus `extra_args` (`-rpcconnect`/`-rpcport`) abgeleitet, sonst `127.0.0.1` + Standardport der Chain. |
+| `cookie_file` | Pfad \| null | `null` | Nur bei `transport: "http"`: Cookie-Datei. Leer = aus `extra_args` (`-rpccookiefile`/`-datadir`) abgeleitet, sonst `~/.bitcoin/.cookie`. `rpcuser_env`/`rpcpassword_env` haben – wie bei `bitcoin-cli` – Vorrang. |
+| `catchup_workers` | int (≥1) | `1` | Worker-Prozesse, die während der Aufholjagd Blöcke vorab holen und parsen. `1` = streng sequenziell wie bisher. Siehe unten. |
 | `blocks_per_day` | int (≥1) | – (Pflicht) | Nominell 144 (10-Minuten-Blöcke); nur zur Näherung des Coin-Alters in Tagen. |
 | `max_block_weight` | int (≥1) | – (Pflicht) | Für `weight_utilization_pct`, standardmäßig 4.000.000. |
 | `halving_interval_blocks` | int (≥1) | – (Pflicht) | Für die Subsidy-Berechnung, standardmäßig 210.000. |
@@ -170,6 +174,45 @@ umfasst) wird also **nicht** auf 20 Blöcke gewartet, bevor Daten
 persistiert werden – `batch_size` steuert nur, wie oft die
 "Progress: height X/Y"-Logzeile und der Zwischen-Checkpoint während einer
 langen Aufholjagd feuern.
+
+### Schnellere Aufholjagd: `transport` und `catchup_workers`
+
+Beide stehen standardmäßig auf dem bisherigen Verhalten (`transport: "cli"`,
+`catchup_workers: 1`) und dürfen auch bei einem bereits laufenden
+Durchlauf eingeschaltet werden – `rpc-ingest` neu starten genügt.
+Bestehende `state_dir`/`output_dir` funktionieren unverändert weiter, und
+die Ausgabe (Parts, `*_part_seq.csv`, `current.csv`, `index/`,
+`block_status.csv`) ist in beiden Fällen byte-identisch.
+
+- **`transport: "http"`** spricht JSON-RPC direkt mit bitcoind, über eine
+  offen gehaltene HTTP-Verbindung pro Prozess, statt pro Block zweimal
+  `bitcoin-cli` zu starten (und dessen eigenes Parsen und
+  Pretty-Printen jeder mehrere MB großen `getblock`-Antwort abzuwarten).
+  Beträge bleiben exakt (`Decimal`), Retry/Timeout wie oben. Endpunkt und
+  Cookie-Datei werden standardmäßig genau so aus `extra_args` abgeleitet,
+  wie `bitcoin-cli` sie verwenden würde; `http_url`/`cookie_file`
+  überschreiben das. Die Cookie-Datei wird bei jedem Neuverbinden und bei
+  HTTP 401 neu gelesen – ein bitcoind-Neustart ist damit nur ein
+  wiederholter Aufruf. Gilt für alle Kommandos, die den `rpc:`-Abschnitt
+  verwenden (`rpc-ingest`, `stale-blocks-ingest`, `mempool-watch`).
+- **`catchup_workers: N`** (N > 1) lässt N Worker-Prozesse
+  (`rpc/catchup.py`) Blöcke holen und parsen, während der Hauptprozess sie
+  streng in Höhen-Reihenfolge übernimmt. Zeilenpuffer, `index/`,
+  `block_status.csv`, Parts und `current.csv` schreibt weiterhin nur der
+  Hauptprozess – in derselben Reihenfolge und an denselben
+  `batch_size`-Grenzen wie zuvor. Nur für Höhen, die mindestens
+  `max_reorg_depth` unter dem Tip liegen (so tiefe Blöcke behandelt die
+  Reorg-Behebung ohnehin als endgültig); das letzte Stück vor dem Tip und
+  das gesamte Tip-Following bleiben sequenziell. Baut ein vorab geholter
+  Block wider Erwarten nicht auf dem vorherigen auf, endet der Durchlauf
+  dort und der nächste Durchlauf führt die normale Reorg-Prüfung aus.
+  bitcoind bearbeitet höchstens `-rpcthreads` Anfragen gleichzeitig (ältere
+  Core-Versionen: Standard 4) – dort mindestens N plus einige Threads für
+  die übrigen Dienste einstellen.
+
+Empfohlen für die Aufholjagd: `transport: "http"` und `catchup_workers`
+etwa bei der Hälfte der physischen Kerne (bitcoind braucht für
+`getblock … 3` selbst CPU). Messwerte: Kapitel 4.14.
 
 ## 3.6 `stale_blocks`
 

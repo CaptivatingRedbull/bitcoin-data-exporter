@@ -67,7 +67,8 @@ full_app/
       mining_pools_dataset.py  refreshes config/pools-v2.json from GitHub
       price_gap_backfill.py    standalone historic price gap backfill against mempool.space's historical-price endpoint
     rpc/                       bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
-      client.py                bitcoin-cli subprocess wrapper
+      client.py                bitcoind RPC client: bitcoin-cli subprocess or direct JSON-RPC over HTTP
+      catchup.py               process pool that fetches + parses blocks ahead of the writer while catching up
       block_parser.py          block/tx JSON -> flat CSV rows
       mining_pools.py          mining pool extractor (tag + address matching)
       reorg_state.py           index/current.csv/latest.csv/block_status.csv/reorg/ state files
@@ -100,6 +101,12 @@ remote node).
 > directories - if they're empty, it starts fresh from genesis (height 0)
 > rather than assuming any pre-existing data in there is compatible with its
 > schema.
+
+Tests (stdlib `unittest`, no extra dependency; `pytest tests` works too):
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+```
 
 ## Running it in production: `start.sh` / `stop.sh`
 
@@ -337,6 +344,59 @@ only read at runtime, and are only appended as `-rpcuser=`/`-rpcpassword=`
 flags if both are actually set. Note that any credential passed as a CLI
 flag is visible to `ps` on a shared host - prefer cookie-file auth
 (the default, if you set nothing) when that matters.
+
+#### Faster catch-up: `transport` and `catchup_workers`
+
+Both default to the original behaviour (`transport: "cli"`,
+`catchup_workers: 1`) and can be switched on for a run that's already in
+progress - just restart `rpc-ingest`; existing `state_dir`/`output_dir`
+keep working, and the output (parts, `*_part_seq.csv`, `current.csv`,
+`index/`, `block_status.csv`) is byte-identical either way.
+
+- `transport: "http"` talks JSON-RPC to bitcoind directly over one
+  kept-alive HTTP connection per process instead of spawning `bitcoin-cli`
+  twice per block (plus bitcoin-cli's own parse-and-pretty-print of every
+  multi-MB `getblock` reply). Same Decimal-exact values, same
+  `max_cli_retries`/`cli_retry_backoff_seconds`/`cli_timeout_seconds`
+  handling. The endpoint and cookie file default to what `bitcoin-cli`
+  would use given `extra_args` (`-rpcconnect`/`-rpcport`/`-rpccookiefile`/
+  `-datadir`, else `127.0.0.1:8332` and `~/.bitcoin/.cookie`); set
+  `http_url`/`cookie_file` to override. `rpcuser_env`/`rpcpassword_env`
+  still take precedence over the cookie. The cookie is re-read on every
+  reconnect and on HTTP 401, so a bitcoind restart is just a retried call.
+  Applies to every command that uses `rpc:` (rpc-ingest, stale-blocks-ingest,
+  mempool-watch).
+- `catchup_workers: N` (N > 1) fetches + parses blocks in N worker
+  processes (`rpc/catchup.py`) while the main process keeps consuming them
+  strictly in height order - row buffers, `index/`, `block_status.csv`,
+  parts and `current.csv` are still written by one process, in the same
+  order and at the same `batch_size` boundaries as before. Only used for
+  heights at least `max_reorg_depth` below the tip (blocks that deep are
+  already treated as final by reorg recovery); the last stretch before the
+  tip and all tip-following stay sequential. If a prefetched block ever
+  doesn't build on the previous one, the pass ends there and the next pass
+  runs the normal reorg check. Workers ignore SIGTERM/SIGINT; the main
+  process stops them after checkpointing, well within the unit's
+  `TimeoutStopSec`. Make sure bitcoind's `-rpcthreads` is at least N plus a
+  few for the other services (older Core releases default to 4).
+
+Benchmark (regtest chain of ~250 kB / ~500-tx blocks, comparable to mainnet
+around height 300k; Apple M2 Max, bitcoind v31.1 on the same host; full
+method and numbers in docs/04, section 4.14):
+
+| `transport` | `catchup_workers` | blocks/s | vs. before |
+|---|---|---|---|
+| `cli` (before this change) | 1 | 8.9 | 1.0x |
+| `http` | 1 | 17.2 | 1.9x |
+| `cli` | 8 | 49.6 | 5.6x |
+| `http` | 4 | 59.2 | 6.7x |
+| `http` | 8 | **79.3** | **8.9x** |
+| `http` | 10 | 73.9 | 8.3x |
+
+Every run's `state_dir` + `output_dir` was byte-identical to the old code's
+(`diff -r`), including a run that resumed an old-code state dir stopped
+mid-catch-up. Not yet measured on mainnet: on the 5950X, start with
+`transport: "http"`, `catchup_workers: 8` and bitcoind `rpcthreads=16`.
 
 `batch_size` (default 20) controls how many blocks accumulate between
 `current.csv` checkpoint log lines during backlog catch-up - every pass of

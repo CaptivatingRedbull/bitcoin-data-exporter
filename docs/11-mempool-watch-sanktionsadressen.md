@@ -149,7 +149,7 @@ Pro neuer Transaktion ein Aufruf `getrawtransaction <txid> 2`:
 Transaktionen, die schon wieder aus dem Mempool verschwunden sind, bevor
 sie abgerufen werden konnten (z. B. innerhalb von Millisekunden per RBF
 ersetzt), liefern „No such mempool transaction“ und werden ohne
-Wiederholung übersprungen (`run_cli(..., retry_rpc_errors=False)`,
+Wiederholung übersprungen (`retry_rpc_errors=False`,
 Kapitel 8.2).
 
 ## 11.5 Sanktionsliste

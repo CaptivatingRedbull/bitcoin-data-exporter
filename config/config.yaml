@@ -165,6 +165,31 @@ rpc:
   cli_retry_backoff_seconds: 5
   cli_timeout_seconds: 30
 
+  # How to talk to bitcoind (see rpc/client.py):
+  #   "cli"  - one bitcoin-cli subprocess per call (the original behaviour).
+  #   "http" - direct JSON-RPC over a kept-alive HTTP connection. Same
+  #            results, retries and timeouts (max_cli_retries etc. above
+  #            apply per call either way), minus two process spawns and
+  #            bitcoin-cli's parse/pretty-print round trip per block - the
+  #            single biggest per-block cost during catch-up.
+  # With "http", the endpoint and cookie file default to whatever
+  # bitcoin-cli would use given extra_args (-rpcconnect/-rpcport/
+  # -rpccookiefile/-datadir, else 127.0.0.1:8332 and ~/.bitcoin/.cookie);
+  # http_url/cookie_file override them. rpcuser_env/rpcpassword_env, when
+  # set, take precedence over the cookie just like with bitcoin-cli. The
+  # cookie is re-read on reconnect/HTTP 401, so a bitcoind restart is fine.
+  transport: "cli"
+  # http_url: "http://127.0.0.1:8332"
+  # cookie_file: "/var/lib/bitcoin/.cookie"
+
+  # Worker processes rpc-ingest fetches + parses blocks with while catching
+  # up (see rpc/catchup.py). 1 = strictly sequential (the original
+  # behaviour). Only used for heights more than max_reorg_depth below the
+  # tip; output (parts, state files, ordering) is identical either way.
+  # Pair with transport: "http", and make sure bitcoind's -rpcthreads is at
+  # least this plus a few for the other services.
+  catchup_workers: 1
+
   blocks_per_day: 144 # nominal 10-min blocks; used only to approximate coin age in days
   max_block_weight: 4000000
   halving_interval_blocks: 210000
