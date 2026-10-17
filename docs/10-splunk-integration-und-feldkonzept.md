@@ -183,6 +183,10 @@ usw.) die richtige Wahl.
 
 ## 10.7 Index
 
+Retention und Größe des Index sind für historische Daten ab 2009
+kritisch – Splunks Standardwerte würden den Großteil der Chain löschen;
+siehe Kapitel 12 und `splunk/TA-btc-parser-indexes/`.
+
 Alle Sourcetypes verwenden in `inputs.conf` denselben Index `btc_parser`
 (Platzhaltername – vor dem ersten Forwarder-Start sowohl in Splunk Cloud
 als auch in Splunk Enterprise explizit anlegen, Indizes werden nicht

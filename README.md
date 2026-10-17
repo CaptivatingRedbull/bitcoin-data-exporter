@@ -48,7 +48,8 @@ full_app/
     pools-v2.json              bundled mining-pool signature dataset
     sanctioned_addresses.csv   sanctions list for mempool-watch
   systemd/                     unit templates + install.sh for a hardened, reboot-safe deployment
-  splunk/                      Splunk add-ons (forwarder inputs, parsing/props)
+  splunk/                      Splunk add-ons (forwarder inputs, parsing/props, index definition,
+                               ingest tuning) + scripts/btc-splunk-enable-backfill.sh - see docs/12
   docs/                        full German-language reference
   btc_parser_app/
     config.py                  loads+validates config.yaml

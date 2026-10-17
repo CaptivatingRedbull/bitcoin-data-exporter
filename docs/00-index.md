@@ -50,6 +50,10 @@ Stand zum Zeitpunkt ihrer Erstellung.
     periodischer Abgleich) gegen eine Sanktionsliste prüft, welche
     Node-Konfiguration dafür nötig ist, und welche Ereignisse nach Splunk
     exportiert werden.
+12. [Splunk: Backfill der vollständigen Chain indexieren](12-splunk-backfill-indexierung.md)
+    Welche Splunk-Standardwerte historische Chain-Daten falsch stempeln
+    oder löschen würden, die Index-/Tuning-Apps, das Prüf- und
+    Aktivierungsskript, Durchsatz-Hebel und Verifikation.
 
 ## Kurzeinstieg
 
