@@ -153,6 +153,7 @@ mapfile -t STANZAS < <(awk -v re="$STANZA_RE" '
 echo
 echo "Inputs:"
 TOTAL_BYTES=0
+TOTAL_FILES=0
 declare -A SEEN_INDEX=()
 declare -A INPUT_DIRS=()
 for entry in "${STANZAS[@]}"; do
@@ -162,8 +163,14 @@ for entry in "${STANZAS[@]}"; do
   files=$(find "$dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null | wc -l)
   bytes=$(find "$dir" -maxdepth 1 -type f -name "$pattern" -printf '%s\n' 2>/dev/null | awk '{s += $1} END {print s + 0}')
   TOTAL_BYTES=$((TOTAL_BYTES + bytes))
+  TOTAL_FILES=$((TOTAL_FILES + files))
   state="enabled"; [[ "$dis" =~ ^(1|true|t|yes|y)$ ]] && state="DISABLED"
   printf '  %-9s %-18s index=%-12s %6d files %10s  %s\n' "$state" "$st" "$idx" "$files" "$(human "$bytes")" "$path"
+  if [[ "$path" == *'$'* ]]; then
+    fail "stanza path still contains a placeholder/variable: $path - replace it with the real absolute path in $INPUTS_CONF"
+  elif [[ ! -d "$dir" ]]; then
+    fail "input directory does not exist: $dir"
+  fi
   if [[ $COUNT_ROWS -eq 1 && $files -gt 0 ]]; then
     rows=$(find "$dir" -maxdepth 1 -type f -name "$pattern" -print0 | xargs -0 cat | wc -l)
     echo "            data rows: $((rows - files))  (lines minus one header per file; rpc-ingest keeps adding parts at the tip)"
@@ -186,7 +193,13 @@ for entry in "${STANZAS[@]}"; do
     ok "props [$st]: MAX_DAYS_AGO=$mda"
   fi
 done
-echo "  total: $(human "$TOTAL_BYTES")"
+echo "  total: $TOTAL_FILES files, $(human "$TOTAL_BYTES")"
+[[ $TOTAL_FILES -gt 0 ]] || fail "no part files found under any input path - nothing to backfill, so the paths are almost certainly wrong"
+# Other stanzas in the same file (the monitor inputs) aren't touched by
+# --enable, but an unresolved placeholder there means they read nothing.
+while IFS= read -r bad; do
+  warn "other stanza with an unresolved placeholder (reads nothing): $bad"
+done < <(grep -E '^\[[a-z]+://[^]]*\$' "$INPUTS_CONF" | grep -vE "^\[batch://.*(${STANZA_RE})")
 
 echo
 echo "Index settings on $INDEX_HOME:"
@@ -206,6 +219,11 @@ for idx in "${!SEEN_INDEX[@]}"; do
   else fail "frozenTimePeriodInSecs=${frozen:-unset} < $MIN_RETENTION_SECS - buckets with 2009+ data would be frozen (deleted) on roll"; fi
   if [[ -n "$quar" && "$quar" -ge $MIN_RETENTION_SECS ]]; then ok "quarantinePastSecs=$quar"
   else fail "quarantinePastSecs=${quar:-unset} < $MIN_RETENTION_SECS - historic events would all go to the quarantine bucket"; fi
+  db_dir="$(as_owner "$INDEX_HOME" "$INDEX_HOME/bin/splunk" envvars 2>/dev/null | tr ';' '\n' | sed -n 's/^ *export SPLUNK_DB=//p' | tr -d '"')"
+  db_size_mb=$(( $(df -B1 --output=size "${db_dir:-$INDEX_HOME/var/lib/splunk}" 2>/dev/null | tail -1 | tr -d ' ' || echo 0) / 1048576 ))
+  if [[ -n "$maxmb" && $db_size_mb -gt 0 && "$maxmb" -gt $db_size_mb ]]; then
+    warn "maxTotalDataSizeMB=$maxmb is larger than the SPLUNK_DB filesystem ($db_size_mb MB) - Splunk pauses indexing at minFreeSpace before the cap ever applies; set it to what the volume can hold (local/indexes.conf)"
+  fi
   need_mb=$(( TOTAL_BYTES * 12 / 10 / 1048576 ))
   if [[ -n "$maxmb" && "$maxmb" -ge $need_mb ]]; then ok "maxTotalDataSizeMB=$maxmb (>= 1.2x current export, $need_mb)"
   else fail "maxTotalDataSizeMB=${maxmb:-unset} < $need_mb (1.2x the export) - Splunk would delete the oldest buckets to stay under it"; fi
