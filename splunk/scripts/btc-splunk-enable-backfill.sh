@@ -28,6 +28,10 @@
 #                       the counts in Splunk are verified.
 #   --count-rows        (with --check) also count CSV data rows per input -
 #                       reads every file, takes minutes on TBs.
+#   --allow-empty       fresh start: zero part files (rpc-ingest not started
+#                       yet) is a WARN instead of a FAIL. Missing input
+#                       directories still FAIL - create them first (see
+#                       btc-fresh-start.sh).
 #   --force             --enable even if a check FAILs.
 #   --log FILE          default: /var/log/btc-splunk-enable-backfill.log
 #
@@ -47,6 +51,7 @@ INPUTS_CONF=""
 STANZA_RE="export/rpc/"
 SNAPSHOT_DIR=""
 COUNT_ROWS=0
+ALLOW_EMPTY=0
 FORCE=0
 LOG_FILE="/var/log/btc-splunk-enable-backfill.log"
 
@@ -65,9 +70,10 @@ while [[ $# -gt 0 ]]; do
     --stanza-regex) STANZA_RE="$2"; shift 2 ;;
     --snapshot-dir) SNAPSHOT_DIR="$2"; shift 2 ;;
     --count-rows) COUNT_ROWS=1; shift ;;
+    --allow-empty) ALLOW_EMPTY=1; shift ;;
     --force) FORCE=1; shift ;;
     --log) LOG_FILE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -177,15 +183,23 @@ for entry in "${STANZAS[@]}"; do
   fi
   SEEN_INDEX["$idx"]=1
 
-  # props on the READING instance - INDEXED_EXTRACTIONS is parsed by
-  # whoever reads the file, so this is where timestamps get assigned.
+  # props on the READING instance (standalone: Enterprise itself). Two
+  # valid shapes (docs chapter 10.6): INDEXED_EXTRACTIONS = csv (small
+  # sourcetypes - parsed by whoever reads the file), or positional
+  # TIME_PREFIX + the generated btc_* indexed-field transforms
+  # (transactions/inputs/outputs). Behind Cribl (prod) neither applies -
+  # the Cribl pipeline does this job; pass --force there.
   ie="$(conf_get "$READ_HOME" props "$st" INDEXED_EXTRACTIONS)"
   mda="$(conf_get "$READ_HOME" props "$st" MAX_DAYS_AGO)"
   tf="$(conf_get "$READ_HOME" props "$st" TIMESTAMP_FIELDS)"
-  if [[ "${ie,,}" != csv ]]; then
-    fail "props [$st] on $READ_HOME: INDEXED_EXTRACTIONS='${ie}' - install TA-btc-parser-parsing on the instance that READS the files"
-  else
+  tp="$(conf_get "$READ_HOME" props "$st" TIME_PREFIX)"
+  idx_tf="$(conf_get "$READ_HOME" props "$st" TRANSFORMS-btc_10_indexed)"
+  if [[ "${ie,,}" == csv ]]; then
     ok "props [$st]: INDEXED_EXTRACTIONS=csv, TIMESTAMP_FIELDS=$tf"
+  elif [[ -n "$tp" && -n "$idx_tf" ]]; then
+    ok "props [$st]: TIME_PREFIX=$tp, indexed fields via $idx_tf"
+  else
+    fail "props [$st] on $READ_HOME: neither INDEXED_EXTRACTIONS=csv nor TIME_PREFIX + TRANSFORMS-btc_10_indexed - install TA-btc-parser-parsing (v2) on the instance that READS the files"
   fi
   if [[ -z "$mda" || "$mda" -lt $MIN_MAX_DAYS_AGO ]]; then
     fail "props [$st]: MAX_DAYS_AGO=${mda:-unset} < $MIN_MAX_DAYS_AGO - pre-$(date -d "@$(( $(date +%s) - ${mda:-2000} * 86400 ))" +%Y) events would get a wrong _time (use TA-btc-parser-parsing from this branch: 10951)"
@@ -194,7 +208,11 @@ for entry in "${STANZAS[@]}"; do
   fi
 done
 echo "  total: $TOTAL_FILES files, $(human "$TOTAL_BYTES")"
-[[ $TOTAL_FILES -gt 0 ]] || fail "no part files found under any input path - nothing to backfill, so the paths are almost certainly wrong"
+if [[ $TOTAL_FILES -eq 0 && $ALLOW_EMPTY -eq 1 ]]; then
+  warn "no part files yet (--allow-empty: fresh start, rpc-ingest fills the directories after enabling)"
+elif [[ $TOTAL_FILES -eq 0 ]]; then
+  fail "no part files found under any input path - nothing to backfill, so the paths are almost certainly wrong (fresh start: --allow-empty)"
+fi
 # Other stanzas in the same file (the monitor inputs) aren't touched by
 # --enable, but an unresolved placeholder there means they read nothing.
 while IFS= read -r bad; do
@@ -219,7 +237,7 @@ for idx in "${!SEEN_INDEX[@]}"; do
   else fail "frozenTimePeriodInSecs=${frozen:-unset} < $MIN_RETENTION_SECS - buckets with 2009+ data would be frozen (deleted) on roll"; fi
   if [[ -n "$quar" && "$quar" -ge $MIN_RETENTION_SECS ]]; then ok "quarantinePastSecs=$quar"
   else fail "quarantinePastSecs=${quar:-unset} < $MIN_RETENTION_SECS - historic events would all go to the quarantine bucket"; fi
-  db_dir="$(as_owner "$INDEX_HOME" "$INDEX_HOME/bin/splunk" envvars 2>/dev/null | tr ';' '\n' | sed -n 's/^ *export SPLUNK_DB=//p' | tr -d '"')"
+  db_dir="$(as_owner "$INDEX_HOME" "$INDEX_HOME/bin/splunk" envvars 2>/dev/null | tr ';' '\n' | sed -n 's/^ *export SPLUNK_DB=//p' | tr -d '" ')"
   db_size_mb=$(( $(df -B1 --output=size "${db_dir:-$INDEX_HOME/var/lib/splunk}" 2>/dev/null | tail -1 | tr -d ' ' || echo 0) / 1048576 ))
   if [[ -n "$maxmb" && $db_size_mb -gt 0 && "$maxmb" -gt $db_size_mb ]]; then
     warn "maxTotalDataSizeMB=$maxmb is larger than the SPLUNK_DB filesystem ($db_size_mb MB) - Splunk pauses indexing at minFreeSpace before the cap ever applies; set it to what the volume can hold (local/indexes.conf)"
@@ -243,7 +261,7 @@ done
 
 echo
 echo "Host:"
-splunk_db="$(as_owner "$INDEX_HOME" "$INDEX_HOME/bin/splunk" envvars 2>/dev/null | tr ';' '\n' | sed -n 's/^ *export SPLUNK_DB=//p' | tr -d '"')"
+splunk_db="$(as_owner "$INDEX_HOME" "$INDEX_HOME/bin/splunk" envvars 2>/dev/null | tr ';' '\n' | sed -n 's/^ *export SPLUNK_DB=//p' | tr -d '" ')"
 splunk_db="${splunk_db:-$INDEX_HOME/var/lib/splunk}"
 db_free=$(df -B1 --output=avail "$splunk_db" 2>/dev/null | tail -1 | tr -d ' ')
 echo "  SPLUNK_DB=$splunk_db  free: $(human "${db_free:-0}")"
@@ -345,6 +363,12 @@ count_files() {
   echo "$n"
 }
 before=$(count_files)
+if [[ $before -eq 0 ]]; then
+  echo "  No part files yet (fresh start) - nothing to watch. Check later with:"
+  echo "    | tstats count where index=btc_parser by sourcetype"
+  echo "===== done ($(date -Is)), rc=$rc ====="
+  exit $rc
+fi
 sleep "${BTC_ENABLE_WATCH_SECS:-300}"
 after=$(count_files)
 echo "  part files: $before -> $after"

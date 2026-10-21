@@ -1,0 +1,6 @@
+# Search-time props/transforms only apply to searches run in an app they
+# are exported to - export them system-wide so dashboards and searches in
+# every app (Search & Reporting, btc-parser-dashboards) see the fields.
+[]
+access = read : [ * ], write : [ admin ]
+export = system
