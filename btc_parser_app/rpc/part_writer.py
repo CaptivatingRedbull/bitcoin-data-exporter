@@ -56,6 +56,12 @@ from btc_parser_app.common.csv_writer import (
 )
 
 
+def _as_frame(rows: list[dict[str, Any]] | pl.DataFrame) -> pl.DataFrame:
+    if isinstance(rows, pl.DataFrame):
+        return rows
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
 def _read_state(path: Path) -> tuple[int, bool] | None:
     row = read_single_row_csv(path)
     if row is None:
@@ -137,12 +143,13 @@ class PartSequencer:
         self._part_is_open = False
         self._persist()
 
-    def write_batched(self, rows: list[dict[str, Any]]) -> None:
-        """Append rows to the current part under state_base, rotating to a
-        new part first if it's already at/over the size cap, or if the
-        current part number was already closed out (moved to export_base by
-        a prior rotation, or written there directly by write_atomic)."""
-        if not rows:
+    def write_batched(self, rows: list[dict[str, Any]] | pl.DataFrame) -> None:
+        """Append rows (dicts, or an already-built DataFrame) to the current
+        part under state_base, rotating to a new part first if it's already
+        at/over the size cap, or if the current part number was already
+        closed out (moved to export_base by a prior rotation, or written
+        there directly by write_atomic)."""
+        if len(rows) == 0:
             return
         target = part_path(self.state_base, self._current_part)
         needs_new_part = not self._part_is_open or (
@@ -155,18 +162,18 @@ class PartSequencer:
             target = part_path(self.state_base, self._current_part)
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        frame = pl.DataFrame(rows, infer_schema_length=None)
+        frame = _as_frame(rows)
         file_exists = target.exists() and target.stat().st_size > 0
         with open(target, mode="a", encoding="utf-8", newline="") as f:
             frame.write_csv(f, include_header=not file_exists)
         self._persist()
 
-    def write_atomic(self, rows: list[dict[str, Any]]) -> None:
-        """Write rows as a brand-new, complete part directly under
-        export_base - always a new part number, written whole (temp file +
-        rename) so it never appears partially written to an external
-        reader, and never touches state_base at all."""
-        if not rows:
+    def write_atomic(self, rows: list[dict[str, Any]] | pl.DataFrame) -> None:
+        """Write rows (dicts, or an already-built DataFrame) as a brand-new,
+        complete part directly under export_base - always a new part number,
+        written whole (temp file + rename) so it never appears partially
+        written to an external reader, and never touches state_base at all."""
+        if len(rows) == 0:
             return
         self._close_if_open()
         self._current_part += 1
@@ -181,5 +188,5 @@ class PartSequencer:
         self._persist()
         target = part_path(self.export_base, self._current_part)
         target.parent.mkdir(parents=True, exist_ok=True)
-        frame = pl.DataFrame(rows, infer_schema_length=None)
+        frame = _as_frame(rows)
         atomic_replace(target, lambda tmp: frame.write_csv(tmp))

@@ -91,6 +91,14 @@ rpc:
   cli_retry_backoff_seconds: 5
   cli_timeout_seconds: 30
 
+  # Faster catch-up (see config.yaml's comments and README "rpc"): opt in
+  # with transport: "http" plus catchup_workers > 1. Safe to switch on a
+  # resumed run - output and state files are byte-identical either way.
+  # The HTTP endpoint/cookie default to what extra_args above point
+  # bitcoin-cli at.
+  transport: "cli"
+  catchup_workers: 1
+
   blocks_per_day: 144
   max_block_weight: 4000000
   halving_interval_blocks: 210000

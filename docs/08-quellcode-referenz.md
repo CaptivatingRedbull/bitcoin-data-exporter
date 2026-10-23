@@ -22,7 +22,9 @@ Rolle zuzuordnen.
 | `config/pools-v2.json` | Mitgeliefertes Mining-Pool-Signaturdatenset (Snapshot von `mempool/mining-pools`, MIT-lizenziert). |
 | `config/sanctioned_addresses.csv` | Sanktionsliste für `mempool-watch` (`address,name,first_name,sanctions_programs`). Siehe Kapitel 11.5. |
 | `systemd/` | Unit-Templates (eine pro Dauerprozess plus `btc-parser.target`) und `install.sh`. Siehe Kapitel 2.5. |
-| `splunk/` | Splunk-Add-ons für Inputs (Forwarder) und Parsing (`props.conf`). Siehe Kapitel 10. |
+| `splunk/` | Splunk-Apps (`TA-btc-parser-inputs`, `-parsing` (Index-Time, Test-Standalone), `-search` (Search-Time), `-indexes`, `-ingest-tuning`, `btc-parser-dashboards`), die Generatoren `build_field_config.py` (Feld-Confs + Cribl-Pipeline aus `export_schema.py`) und `dashboards/build_btc_mempool_explorer.py` (Dashboard + gespeicherte Suchen), sowie `scripts/` (`btc-splunk-enable-backfill.sh`, `btc-fresh-start.sh`, `btc-splunk-bench.sh`). Siehe Kapitel 10 und 12. |
+| `cribl/` | Generierte Cribl-Pipeline für Prod (UF → Cribl → Splunk) plus Einrichtungsanleitung. Siehe Kapitel 10.1. |
+| `tests/` | `unittest`-Tests (`python -m unittest discover -s tests`): parallele Aufholjagd, RPC-Client, Export-Schema gegen die erzeugten Splunk-Regexe, Dashboard-`tstats` nur auf indizierten Feldern. |
 | `config/XBTUSD_1.csv` / `config/XBTEUR_1.csv` | **Nicht mitgeliefert** – hier die Kraken-1-Minuten-OHLC-Exporte ablegen (siehe Kapitel 6). |
 
 Zur Laufzeit zusätzlich erzeugt (nicht im Repository): `.pids/`,
@@ -36,6 +38,7 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | `__init__.py` | Leer – markiert das Verzeichnis als Python-Paket. |
 | `cli.py` | `argparse`-Einstiegspunkt (`build_parser()`, `main()`). Definiert alle sechs Subkommandos, lädt die Konfiguration, konfiguriert Logging, dispatcht zum jeweiligen Modul. Enthält das `SIGTERM → KeyboardInterrupt`-Shim für `api-poll`. Siehe Kapitel 2. |
 | `config.py` | Lädt und validiert `config.yaml` in typisierte, unveränderliche (`frozen`) Dataclasses (`AppConfig` und Unter-Configs je Sektion). Jedes andere Modul erhält seine Konfiguration als Parameter statt globaler Konstanten. Siehe Kapitel 3. |
+| `export_schema.py` | Spaltenreihenfolge jeder Splunk-seitigen Export-CSV und welche Spalten indizierte Felder werden – einzige Quelle für `splunk/build_field_config.py`. Siehe Kapitel 10.6. |
 
 ### `btc_parser_app/common/` – geteilte Infrastruktur
 
@@ -52,7 +55,8 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | Datei | Rolle |
 |---|---|
 | `__init__.py` | Leer. |
-| `client.py` | Dünner `bitcoin-cli`-Subprozess-Wrapper mit Retry/Timeout (`run_cli()`), plus die konkreten RPC-Aufrufe (`get_block_count`, `get_block_hash`, `get_block_verbose`, `get_block_header`, `get_block_header_raw`, `get_chain_tips`, sowie für `mempool-watch` `get_raw_mempool_txids`, `get_raw_transaction`, `get_tx_out`, `get_tx_spending_prevout`, `get_block_txids`, `get_network_info`). `run_cli(..., retry_rpc_errors=False)` wirft bei einem deterministischen RPC-Fehler (z. B. „No such mempool transaction“) sofort `RpcError`, statt die Retry-Schleife zu durchlaufen. Siehe Kapitel 4.7. |
+| `client.py` | RPC-Client mit Retry/Timeout über `bitcoin-cli`-Subprozess (`run_cli()`) oder direktes JSON-RPC über HTTP (`rpc.transport`, `_HttpRpcConnection`), gemeinsamer Einstieg `_call()`; plus die konkreten RPC-Aufrufe (`get_block_count`, `get_block_hash`, `get_block`, `get_block_header`, `get_block_header_raw`, `get_chain_tips`, sowie für `mempool-watch` `get_raw_mempool_txids`, `get_raw_transaction`, `get_tx_out`, `get_tx_spending_prevout`, `get_block_txids`, `get_network_info`). `retry_rpc_errors=False` wirft bei einem deterministischen RPC-Fehler (z. B. „No such mempool transaction“) sofort `RpcError`, statt die Retry-Schleife zu durchlaufen. Siehe Kapitel 4.7. |
+| `catchup.py` | `parse_block()` (getblock → `ParsedBlock`) und `iter_parsed_blocks()`: Prozess-Pool für die parallele Aufholjagd (`rpc.catchup_workers`), liefert Ergebnisse strikt in Höhen-Reihenfolge. Siehe Kapitel 4.14. |
 | `block_parser.py` | Wandelt ein `getblock verbosity=3`-JSON in flache Block-/Transaktions-Event-Dicts um (`aggregate_block()`, `aggregate_transaction()`). Enthält die gesamte Feldberechnungslogik für `blocks.csv`/`transactions.csv`; reicht den rohen Coinbase-`scriptSig`/die Auszahlungsadressen nur als internen Rückgabewert an die Mining-Pool-Zuordnung weiter, ohne sie zu exportieren. Siehe Kapitel 4.9–4.10. |
 | `mining_pools.py` | Mining-Pool-Extraktor: `PoolMatcher` lädt das Signaturdatenset und matcht per Coinbase-Tag oder Auszahlungsadresse (`PoolMatcher.match()`). Siehe Kapitel 4.8. |
 | `reorg_state.py` | Zustandsdateien der Reorg-Logik: `IndexStore` (`index/index.csv`), `BlockStatusStore` (`block_status.csv`), Pointer-Lese-/Schreibfunktionen (`current.csv`/`latest.csv`), `write_reorg_log()` (`reorg/`-Audit-CSVs), `seed_index_from_blocks_csv()` (liest `blocks.csv`-Parts aus sowohl `state_dir` als auch `output_dir`). Siehe Kapitel 4.5. |

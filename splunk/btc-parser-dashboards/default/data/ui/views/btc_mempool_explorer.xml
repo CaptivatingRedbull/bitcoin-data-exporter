@@ -1,0 +1,3365 @@
+<dashboard version="2" theme="dark">
+    <label>BTC Mempool Explorer</label>
+    <description>mempool.space-style views over the btc_parser exports</description>
+    <definition><![CDATA[
+{
+    "title": "BTC Mempool Explorer",
+    "description": "mempool.space-style views over the btc_parser exports (index=btc_parser)",
+    "inputs": {
+        "input_time": {
+            "type": "input.timerange",
+            "title": "Time range",
+            "options": {
+                "token": "global_time",
+                "defaultValue": "-30d@d,now"
+            }
+        },
+        "input_span": {
+            "type": "input.dropdown",
+            "title": "Bucket",
+            "options": {
+                "token": "span",
+                "defaultValue": "1d",
+                "items": [
+                    {
+                        "label": "10 minutes",
+                        "value": "10m"
+                    },
+                    {
+                        "label": "1 hour",
+                        "value": "1h"
+                    },
+                    {
+                        "label": "4 hours",
+                        "value": "4h"
+                    },
+                    {
+                        "label": "1 day",
+                        "value": "1d"
+                    },
+                    {
+                        "label": "1 week",
+                        "value": "1w"
+                    },
+                    {
+                        "label": "1 month",
+                        "value": "1mon"
+                    }
+                ]
+            }
+        },
+        "input_idx": {
+            "type": "input.text",
+            "title": "Index",
+            "options": {
+                "token": "idx",
+                "defaultValue": "btc_parser"
+            }
+        },
+        "input_addr": {
+            "type": "input.text",
+            "title": "Address (Records)",
+            "options": {
+                "token": "addr"
+            }
+        }
+    },
+    "defaults": {
+        "dataSources": {
+            "ds.search": {
+                "options": {
+                    "queryParameters": {
+                        "earliest": "$global_time.earliest$",
+                        "latest": "$global_time.latest$"
+                    }
+                }
+            }
+        }
+    },
+    "visualizations": {
+        "viz_kpi_price": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('USD') | lastPoint()",
+                "sparklineDisplay": "below",
+                "trendDisplay": "off",
+                "unit": "$",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a",
+                "sparklineValues": "> primary | seriesByName('USD')",
+                "sparklineStrokeColor": "#f7931a"
+            },
+            "title": "BTC / USD (now)",
+            "dataSources": {
+                "primary": "ds_price_24h"
+            }
+        },
+        "viz_kpi_change": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('change_pct') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "%",
+                "unitPosition": "after",
+                "numberPrecision": 2,
+                "majorColor": "> majorValue | rangeValue(changeColors)"
+            },
+            "title": "24h change",
+            "dataSources": {
+                "primary": "ds_price_24h_change"
+            },
+            "context": {
+                "changeColors": [
+                    {
+                        "to": 0,
+                        "value": "#dc3545"
+                    },
+                    {
+                        "from": 0,
+                        "value": "#3bcc49"
+                    }
+                ]
+            }
+        },
+        "viz_kpi_height": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('height') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#1bd8f4",
+                "shouldUseThousandSeparators": false
+            },
+            "title": "Block height",
+            "dataSources": {
+                "primary": "ds_tip"
+            }
+        },
+        "viz_kpi_median_fee": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('median_fee') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "sat/vB",
+                "unitPosition": "after",
+                "numberPrecision": 1,
+                "majorColor": "#ffc107"
+            },
+            "title": "Tip block median fee",
+            "dataSources": {
+                "primary": "ds_tip"
+            }
+        },
+        "viz_kpi_blocktime": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('avg_block_min') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "min",
+                "unitPosition": "after",
+                "numberPrecision": 2,
+                "majorColor": "#4a68b9"
+            },
+            "title": "Avg block time (range)",
+            "dataSources": {
+                "primary": "ds_range_stats"
+            }
+        },
+        "viz_kpi_hashrate": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('hashrate_ehs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "EH/s",
+                "unitPosition": "after",
+                "numberPrecision": 1,
+                "majorColor": "#9339f4"
+            },
+            "title": "Avg hashrate (range)",
+            "dataSources": {
+                "primary": "ds_range_stats"
+            }
+        },
+        "viz_price_overview": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a",
+                    "#4a68b9"
+                ],
+                "areaOpacity": 0.25,
+                "yAxisTitleText": "Fiat"
+            },
+            "title": "BTC price",
+            "dataSources": {
+                "primary": "ds_price_range"
+            }
+        },
+        "viz_fee_rates_overview": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#ffc107",
+                    "#f7931a"
+                ],
+                "yAxisTitleText": "sat/vB"
+            },
+            "title": "Block fee rates",
+            "dataSources": {
+                "primary": "ds_fee_rates_blocks"
+            },
+            "description": "Median of per-block median fee rate vs. average fee rate (sat/vB)"
+        },
+        "viz_latest_blocks": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10,
+                "columnFormat": {
+                    "Median sat/vB": {
+                        "rowBackgroundColors": "> table | seriesByName(\"Median sat/vB\") | rangeValue(feeColors)"
+                    },
+                    "Avg sat/vB": {
+                        "rowBackgroundColors": "> table | seriesByName(\"Avg sat/vB\") | rangeValue(feeColors)"
+                    },
+                    "Full %": {
+                        "rowBackgroundColors": "> table | seriesByName(\"Full %\") | rangeValue(fullColors)"
+                    }
+                }
+            },
+            "title": "Latest blocks",
+            "dataSources": {
+                "primary": "ds_latest_blocks"
+            },
+            "description": "Like mempool.space's block strip - fee colors use the mempool.space gradient",
+            "context": {
+                "feeColors": [
+                    {
+                        "value": "#557d00",
+                        "to": 1
+                    },
+                    {
+                        "value": "#5d7d01",
+                        "from": 1,
+                        "to": 2
+                    },
+                    {
+                        "value": "#637d02",
+                        "from": 2,
+                        "to": 3
+                    },
+                    {
+                        "value": "#6d7d04",
+                        "from": 3,
+                        "to": 4
+                    },
+                    {
+                        "value": "#757d05",
+                        "from": 4,
+                        "to": 6
+                    },
+                    {
+                        "value": "#867d08",
+                        "from": 6,
+                        "to": 8
+                    },
+                    {
+                        "value": "#8c7d09",
+                        "from": 8,
+                        "to": 10
+                    },
+                    {
+                        "value": "#957d0b",
+                        "from": 10,
+                        "to": 15
+                    },
+                    {
+                        "value": "#a67d0e",
+                        "from": 15,
+                        "to": 20
+                    },
+                    {
+                        "value": "#b27d10",
+                        "from": 20,
+                        "to": 30
+                    },
+                    {
+                        "value": "#bf7815",
+                        "from": 30,
+                        "to": 50
+                    },
+                    {
+                        "value": "#bd5c28",
+                        "from": 50,
+                        "to": 100
+                    },
+                    {
+                        "value": "#bb3d3c",
+                        "from": 100,
+                        "to": 200
+                    },
+                    {
+                        "value": "#b30e55",
+                        "from": 200
+                    }
+                ],
+                "fullColors": [
+                    {
+                        "to": 50,
+                        "value": "#2b2d42"
+                    },
+                    {
+                        "from": 50,
+                        "to": 90,
+                        "value": "#3a4a8a"
+                    },
+                    {
+                        "from": 90,
+                        "value": "#4a68b9"
+                    }
+                ]
+            }
+        },
+        "viz_pool_pie_overview": {
+            "type": "splunk.pie",
+            "options": {},
+            "title": "Mining pools (blocks in range)",
+            "dataSources": {
+                "primary": "ds_pool_top"
+            }
+        },
+        "viz_throughput": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#1bd8f4",
+                    "#f7931a"
+                ],
+                "overlayFields": [
+                    "tx/s"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "vB/s",
+                "y2AxisTitleText": "tx/s"
+            },
+            "title": "Confirmed throughput",
+            "dataSources": {
+                "primary": "ds_throughput"
+            },
+            "description": "Mempool.space shows incoming vB/s; here: vB/s confirmed into blocks"
+        },
+        "viz_about": {
+            "type": "splunk.markdown",
+            "options": {
+                "markdown": "#### About\nMempool.space-style views built on the **btc_parser** exports (`btc:blocks`, `btc:transactions`, `btc:inputs`, `btc:prices`, `btc:stale_block_headers`, `btc:sanctioned_tx_events`). There is no live mempool snapshot in the exports, so the \"mempool\" charts show what was **confirmed** in each time bucket. Charts over `btc:transactions`/`btc:inputs` scan every row - keep the time range short on a full export."
+            }
+        },
+        "viz_epoch_progress": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('progress_pct') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "%",
+                "unitPosition": "after",
+                "numberPrecision": 1,
+                "majorColor": "#4a68b9"
+            },
+            "title": "Epoch progress",
+            "dataSources": {
+                "primary": "ds_epoch"
+            }
+        },
+        "viz_epoch_remaining": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('remaining') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#1bd8f4"
+            },
+            "title": "Blocks to retarget",
+            "dataSources": {
+                "primary": "ds_epoch"
+            }
+        },
+        "viz_epoch_change": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('est_change_pct') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "%",
+                "unitPosition": "after",
+                "numberPrecision": 2,
+                "majorColor": "> majorValue | rangeValue(changeColors)"
+            },
+            "title": "Est. difficulty change",
+            "dataSources": {
+                "primary": "ds_epoch"
+            },
+            "context": {
+                "changeColors": [
+                    {
+                        "to": 0,
+                        "value": "#dc3545"
+                    },
+                    {
+                        "from": 0,
+                        "value": "#3bcc49"
+                    }
+                ]
+            }
+        },
+        "viz_epoch_date": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('retarget') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "majorColor": "#8a8fa8"
+            },
+            "title": "Est. retarget (UTC)",
+            "dataSources": {
+                "primary": "ds_epoch"
+            }
+        },
+        "viz_halving_blocks": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('halving_blocks') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Blocks to halving",
+            "dataSources": {
+                "primary": "ds_epoch"
+            }
+        },
+        "viz_halving_date": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('halving_date') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "majorColor": "#f7931a"
+            },
+            "title": "Est. halving date",
+            "dataSources": {
+                "primary": "ds_epoch"
+            }
+        },
+        "viz_hashrate": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#5b6aa8",
+                    "#ffc107",
+                    "#1bd8f4"
+                ],
+                "overlayFields": [
+                    "Difficulty (T)"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "EH/s",
+                "y2AxisTitleText": "Difficulty (T)"
+            },
+            "title": "Hashrate & difficulty",
+            "dataSources": {
+                "primary": "ds_hashrate"
+            },
+            "description": "Hashrate estimated per day as sum(difficulty x 2^32) / sum(block intervals)"
+        },
+        "viz_pool_ranking": {
+            "type": "splunk.table",
+            "options": {
+                "count": 15,
+                "columnFormat": {
+                    "Share %": {
+                        "rowBackgroundColors": "> table | seriesByName(\"Share %\") | rangeValue(shareColors)"
+                    }
+                }
+            },
+            "title": "Pool ranking",
+            "dataSources": {
+                "primary": "ds_pool_ranking"
+            },
+            "context": {
+                "shareColors": [
+                    {
+                        "to": 5,
+                        "value": "#2b2d42"
+                    },
+                    {
+                        "from": 5,
+                        "to": 15,
+                        "value": "#3a4a8a"
+                    },
+                    {
+                        "from": 15,
+                        "to": 30,
+                        "value": "#653b9c"
+                    },
+                    {
+                        "from": 30,
+                        "value": "#9339f4"
+                    }
+                ]
+            }
+        },
+        "viz_pool_pie": {
+            "type": "splunk.pie",
+            "options": {},
+            "title": "Pool dominance",
+            "dataSources": {
+                "primary": "ds_pool_top"
+            }
+        },
+        "viz_pool_time": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "stackMode": "stacked100",
+                "areaOpacity": 0.85,
+                "yAxisTitleText": "% of blocks"
+            },
+            "title": "Pool dominance over time",
+            "dataSources": {
+                "primary": "ds_pool_time"
+            }
+        },
+        "viz_difficulty_epochs": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10,
+                "columnFormat": {
+                    "Change %": {
+                        "rowColors": "> table | seriesByName(\"Change %\") | rangeValue(changeColors)"
+                    }
+                }
+            },
+            "title": "Difficulty adjustments",
+            "dataSources": {
+                "primary": "ds_difficulty_epochs"
+            },
+            "description": "First epoch in range has no previous value; partial epochs are averaged over the blocks seen",
+            "context": {
+                "changeColors": [
+                    {
+                        "to": 0,
+                        "value": "#dc3545"
+                    },
+                    {
+                        "from": 0,
+                        "value": "#3bcc49"
+                    }
+                ]
+            }
+        },
+        "viz_fees_subsidy": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "stackMode": "stacked",
+                "seriesColors": [
+                    "#4a68b9",
+                    "#f7931a",
+                    "#ffc107"
+                ],
+                "overlayFields": [
+                    "Fee share %"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "BTC",
+                "y2AxisTitleText": "Fee share %"
+            },
+            "title": "Block rewards: subsidy vs fees",
+            "dataSources": {
+                "primary": "ds_fees_subsidy"
+            }
+        },
+        "viz_fees_usd": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#4a68b9",
+                    "#f7931a"
+                ],
+                "areaOpacity": 0.3,
+                "yAxisTitleText": "USD"
+            },
+            "title": "Block rewards in USD",
+            "dataSources": {
+                "primary": "ds_fees_usd"
+            },
+            "description": "BTC amounts per bucket x average btc:prices USD in the same bucket"
+        },
+        "viz_avg_fee": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "seriesColors": [
+                    "#f7931a"
+                ],
+                "yAxisTitleText": "sats"
+            },
+            "title": "Average fee per transaction",
+            "dataSources": {
+                "primary": "ds_avg_fee"
+            }
+        },
+        "viz_fee_percentiles": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "yAxisScale": "log",
+                "yAxisTitleText": "sat/vB",
+                "seriesColors": [
+                    "#557d00",
+                    "#757d05",
+                    "#957d0b",
+                    "#ffc107",
+                    "#bd5c28",
+                    "#b30e55"
+                ]
+            },
+            "title": "Block fee rates (percentiles)",
+            "dataSources": {
+                "primary": "ds_fee_percentiles"
+            },
+            "description": "Per-transaction fee rates of confirmed transactions (zero-fee package parents excluded), log scale"
+        },
+        "viz_fee_bands_time": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "right",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "stackMode": "stacked",
+                "areaOpacity": 1,
+                "seriesColorsByField": {
+                    "<1": "#557d00",
+                    "1-2": "#5d7d01",
+                    "2-3": "#637d02",
+                    "3-4": "#6d7d04",
+                    "4-6": "#757d05",
+                    "6-8": "#867d08",
+                    "8-10": "#8c7d09",
+                    "10-15": "#957d0b",
+                    "15-20": "#a67d0e",
+                    "20-30": "#b27d10",
+                    "30-50": "#bf7815",
+                    "50-100": "#bd5c28",
+                    "100-200": "#bb3d3c",
+                    "200+": "#b30e55"
+                },
+                "yAxisTitleText": "vMB"
+            },
+            "title": "Confirmed vMB by fee rate",
+            "dataSources": {
+                "primary": "ds_fee_bands_time"
+            },
+            "description": "The mempool.space 'Memory usage by fee rate' chart, but for vbytes confirmed per bucket"
+        },
+        "viz_fee_bands_total": {
+            "type": "splunk.bar",
+            "options": {
+                "stackMode": "stacked100",
+                "seriesColorsByField": {
+                    "<1": "#557d00",
+                    "1-2": "#5d7d01",
+                    "2-3": "#637d02",
+                    "3-4": "#6d7d04",
+                    "4-6": "#757d05",
+                    "6-8": "#867d08",
+                    "8-10": "#8c7d09",
+                    "10-15": "#957d0b",
+                    "15-20": "#a67d0e",
+                    "20-30": "#b27d10",
+                    "30-50": "#bf7815",
+                    "50-100": "#bd5c28",
+                    "100-200": "#bb3d3c",
+                    "200+": "#b30e55"
+                },
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "yAxisTitleVisibility": "hide"
+            },
+            "title": "Block space by fee rate (range total)",
+            "dataSources": {
+                "primary": "ds_fee_bands_total"
+            }
+        },
+        "viz_size_weight": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a",
+                    "#4a68b9",
+                    "#8a8fa8"
+                ],
+                "overlayFields": [
+                    "Full %"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "MB / MWU",
+                "y2AxisTitleText": "Full %"
+            },
+            "title": "Block sizes & weights",
+            "dataSources": {
+                "primary": "ds_size_weight"
+            }
+        },
+        "viz_tx_count": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "seriesColors": [
+                    "#1bd8f4",
+                    "#4a68b9"
+                ],
+                "overlayFields": [
+                    "Avg TXs per block"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "TXs confirmed",
+                "y2AxisTitleText": "Avg per block"
+            },
+            "title": "Transactions",
+            "dataSources": {
+                "primary": "ds_tx_count"
+            }
+        },
+        "viz_block_time": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#4a68b9",
+                    "#8a8fa8",
+                    "#f7931a"
+                ],
+                "overlayFields": [
+                    "Blocks"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "minutes",
+                "y2AxisTitleText": "blocks"
+            },
+            "title": "Block interval",
+            "dataSources": {
+                "primary": "ds_block_time"
+            }
+        },
+        "viz_interval_hist": {
+            "type": "splunk.column",
+            "options": {
+                "seriesColors": [
+                    "#9339f4"
+                ],
+                "legendDisplay": "off"
+            },
+            "title": "Block interval distribution",
+            "dataSources": {
+                "primary": "ds_interval_hist"
+            },
+            "description": "Should look exponential with a mean of ~10 min"
+        },
+        "viz_vsize": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a",
+                    "#1bd8f4"
+                ],
+                "yAxisTitleText": "vB"
+            },
+            "title": "Transaction vsize",
+            "dataSources": {
+                "primary": "ds_vsize"
+            }
+        },
+        "viz_long_gaps": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Block gaps >= 60 min",
+            "dataSources": {
+                "primary": "ds_long_gaps"
+            }
+        },
+        "viz_adoption": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#3bcc49",
+                    "#9339f4",
+                    "#1bd8f4",
+                    "#f7931a"
+                ],
+                "yAxisTitleText": "% of transactions"
+            },
+            "title": "SegWit / Taproot / RBF adoption",
+            "dataSources": {
+                "primary": "ds_adoption"
+            },
+            "description": "Share of non-coinbase transactions per bucket"
+        },
+        "viz_out_types": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "stackMode": "stacked100",
+                "areaOpacity": 0.9,
+                "seriesColorsByField": {
+                    "P2WPKH": "#3bcc49",
+                    "P2TR": "#9339f4",
+                    "P2PKH": "#f7931a",
+                    "P2SH": "#ffc107",
+                    "P2WSH": "#1bd8f4",
+                    "OP_RETURN": "#dc3545",
+                    "P2A (anchor)": "#4a68b9",
+                    "Other": "#8a8fa8"
+                },
+                "yAxisTitleText": "% of outputs"
+            },
+            "title": "New outputs by script type",
+            "dataSources": {
+                "primary": "ds_out_types"
+            }
+        },
+        "viz_out_types_total": {
+            "type": "splunk.pie",
+            "options": {},
+            "title": "Output types (range total)",
+            "dataSources": {
+                "primary": "ds_out_types_total"
+            }
+        },
+        "viz_op_return": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "seriesColors": [
+                    "#dc3545",
+                    "#ffc107"
+                ],
+                "overlayFields": [
+                    "OP_RETURN kB"
+                ],
+                "showOverlayY2Axis": true,
+                "yAxisTitleText": "outputs",
+                "y2AxisTitleText": "kB"
+            },
+            "title": "OP_RETURN usage",
+            "dataSources": {
+                "primary": "ds_op_return"
+            }
+        },
+        "viz_cdd": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "seriesColors": [
+                    "#f7931a"
+                ],
+                "yAxisTitleText": "BTC-days"
+            },
+            "title": "Coin days destroyed",
+            "dataSources": {
+                "primary": "ds_cdd"
+            },
+            "description": "Old coins moving show up as spikes"
+        },
+        "viz_coin_age": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "right",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "stackMode": "stacked100",
+                "areaOpacity": 0.9,
+                "seriesColorsByField": {
+                    "< 1 day": "#1bd8f4",
+                    "1 day - 1 week": "#2fa6e0",
+                    "1 week - 1 month": "#4a68b9",
+                    "1 - 6 months": "#653b9c",
+                    "6 - 12 months": "#9339f4",
+                    "1 - 2 years": "#c03fb0",
+                    "2 - 5 years": "#e0607e",
+                    "5+ years": "#f7931a"
+                },
+                "yAxisTitleText": "% of spent BTC"
+            },
+            "title": "Spent BTC by coin age",
+            "dataSources": {
+                "primary": "ds_coin_age"
+            },
+            "description": "Value of spent inputs, grouped by how long the coins were unspent (from btc:inputs)"
+        },
+        "viz_price_last": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('last') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "$",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Last USD",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            }
+        },
+        "viz_price_eur": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('eur') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "€",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#4a68b9"
+            },
+            "title": "Last EUR",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            }
+        },
+        "viz_price_change": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('change') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "%",
+                "unitPosition": "after",
+                "numberPrecision": 2,
+                "majorColor": "> majorValue | rangeValue(changeColors)"
+            },
+            "title": "Change over range",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            },
+            "context": {
+                "changeColors": [
+                    {
+                        "to": 0,
+                        "value": "#dc3545"
+                    },
+                    {
+                        "from": 0,
+                        "value": "#3bcc49"
+                    }
+                ]
+            }
+        },
+        "viz_price_hi": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('hi') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "$",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#3bcc49"
+            },
+            "title": "Range high (bucket avg)",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            }
+        },
+        "viz_price_lo": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('lo') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "$",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#dc3545"
+            },
+            "title": "Range low (bucket avg)",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            }
+        },
+        "viz_price_sats": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('sats') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#ffc107"
+            },
+            "title": "Sats per dollar",
+            "dataSources": {
+                "primary": "ds_price_range_stats"
+            }
+        },
+        "viz_price_main": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a",
+                    "#4a68b9"
+                ],
+                "yAxisTitleText": "Fiat"
+            },
+            "title": "BTC price",
+            "dataSources": {
+                "primary": "ds_price_range"
+            }
+        },
+        "viz_price_daily_change": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "stackMode": "stacked",
+                "seriesColorsByField": {
+                    "Up": "#3bcc49",
+                    "Down": "#dc3545"
+                },
+                "yAxisTitleText": "%"
+            },
+            "title": "Daily change % (open to close)",
+            "dataSources": {
+                "primary": "ds_price_daily_change"
+            }
+        },
+        "viz_price_ohlc": {
+            "type": "splunk.table",
+            "options": {
+                "count": 12,
+                "columnFormat": {
+                    "Change %": {
+                        "rowColors": "> table | seriesByName(\"Change %\") | rangeValue(changeColors)"
+                    }
+                }
+            },
+            "title": "Daily OHLC (USD)",
+            "dataSources": {
+                "primary": "ds_price_ohlc_table"
+            },
+            "context": {
+                "changeColors": [
+                    {
+                        "to": 0,
+                        "value": "#dc3545"
+                    },
+                    {
+                        "from": 0,
+                        "value": "#3bcc49"
+                    }
+                ]
+            }
+        },
+        "viz_stale_tips": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('tips') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#ffc107"
+            },
+            "title": "Stale tips seen",
+            "dataSources": {
+                "primary": "ds_stale_kpi"
+            }
+        },
+        "viz_stale_heights": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('heights') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Heights affected",
+            "dataSources": {
+                "primary": "ds_stale_kpi"
+            }
+        },
+        "viz_stale_branch": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_branch') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#dc3545"
+            },
+            "title": "Longest fork (blocks)",
+            "dataSources": {
+                "primary": "ds_stale_kpi"
+            }
+        },
+        "viz_reorg_heights": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('reorg_heights') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#9339f4"
+            },
+            "title": "Reorged heights in export",
+            "dataSources": {
+                "primary": "ds_export_reorgs_kpi"
+            },
+            "description": "Heights with more than one exported block hash"
+        },
+        "viz_stale_table": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Stale / orphaned tips",
+            "dataSources": {
+                "primary": "ds_stale_table"
+            }
+        },
+        "viz_stale_time": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "stackMode": "stacked",
+                "seriesColorsByField": {
+                    "own_node": "#1bd8f4",
+                    "github": "#9339f4"
+                }
+            },
+            "title": "Stale headers observed",
+            "dataSources": {
+                "primary": "ds_stale_time"
+            }
+        },
+        "viz_export_reorgs": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Heights with more than one exported block",
+            "dataSources": {
+                "primary": "ds_export_reorgs"
+            }
+        },
+        "viz_sanc_txs": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('txs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#dc3545"
+            },
+            "title": "Sanctioned txs",
+            "dataSources": {
+                "primary": "ds_sanctions_kpi"
+            }
+        },
+        "viz_sanc_addrs": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('addrs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Listed addresses hit",
+            "dataSources": {
+                "primary": "ds_sanctions_kpi"
+            }
+        },
+        "viz_sanc_btc": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('btc') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#ffc107"
+            },
+            "title": "BTC moved (matched I/O)",
+            "dataSources": {
+                "primary": "ds_sanctions_kpi"
+            }
+        },
+        "viz_sanc_pending": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('pending') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#9339f4"
+            },
+            "title": "Unconfirmed now",
+            "dataSources": {
+                "primary": "ds_sanctions_pending_kpi"
+            }
+        },
+        "viz_sanc_time": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "bottom",
+                "xAxisTitleVisibility": "hide",
+                "stackMode": "stacked",
+                "seriesColorsByField": {
+                    "seen": "#ffc107",
+                    "confirmed": "#3bcc49",
+                    "replaced": "#4a68b9",
+                    "removed": "#8a8fa8",
+                    "unconfirmed": "#dc3545"
+                }
+            },
+            "title": "Events by type",
+            "dataSources": {
+                "primary": "ds_sanctions_time"
+            }
+        },
+        "viz_sanc_entities": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "By listed entity",
+            "dataSources": {
+                "primary": "ds_sanctions_entities"
+            }
+        },
+        "viz_sanc_pending_table": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Still unconfirmed",
+            "dataSources": {
+                "primary": "ds_sanctions_pending"
+            }
+        },
+        "viz_sanc_latest": {
+            "type": "splunk.table",
+            "options": {
+                "count": 15,
+                "columnFormat": {
+                    "Event": {
+                        "rowBackgroundColors": "> table | seriesByName(\"Event\") | matchValue(eventColors)"
+                    }
+                }
+            },
+            "title": "Latest events",
+            "dataSources": {
+                "primary": "ds_sanctions_latest"
+            },
+            "context": {
+                "eventColors": [
+                    {
+                        "match": "seen",
+                        "value": "#7a5c00"
+                    },
+                    {
+                        "match": "confirmed",
+                        "value": "#1f6b2a"
+                    },
+                    {
+                        "match": "replaced",
+                        "value": "#2c3e7a"
+                    },
+                    {
+                        "match": "removed",
+                        "value": "#44475a"
+                    },
+                    {
+                        "match": "unconfirmed",
+                        "value": "#7a1f2a"
+                    }
+                ]
+            }
+        },
+        "viz_rec_max_fee": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_fee_btc') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#dc3545"
+            },
+            "title": "Highest fee ever",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_max_rate": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_fee_rate') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "sat/vB",
+                "unitPosition": "after",
+                "numberPrecision": 0,
+                "majorColor": "#dc3545"
+            },
+            "title": "Highest fee rate ever",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_min_fee": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('min_fee_sats') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "sats",
+                "unitPosition": "after",
+                "numberPrecision": 0,
+                "majorColor": "#3bcc49"
+            },
+            "title": "Lowest non-zero fee",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_zero_fee": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('zero_fee_txs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#8a8fa8"
+            },
+            "title": "Zero-fee transactions",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_vsize": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_vsize') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "vB",
+                "unitPosition": "after",
+                "numberPrecision": 0,
+                "majorColor": "#1bd8f4"
+            },
+            "title": "Largest transaction",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_vin": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_vin') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#4a68b9"
+            },
+            "title": "Most inputs",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_vout": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_vout') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#4a68b9"
+            },
+            "title": "Most outputs",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_age": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('age_years') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "years",
+                "unitPosition": "after",
+                "numberPrecision": 1,
+                "majorColor": "#9339f4"
+            },
+            "title": "Oldest coin moved",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_cdd": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_cdd') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC-days",
+                "unitPosition": "after",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Most coin days destroyed",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_out": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('max_out_btc') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 2,
+                "majorColor": "#ffc107"
+            },
+            "title": "Largest tx output total",
+            "dataSources": {
+                "primary": "ds_rec_tx_values"
+            }
+        },
+        "viz_rec_tx_table": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Record transactions",
+            "dataSources": {
+                "primary": "ds_rec_tx_table"
+            }
+        },
+        "viz_rec_minfee": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Lowest non-zero fee (up to 25 ties)",
+            "dataSources": {
+                "primary": "ds_rec_minfee_rows"
+            }
+        },
+        "viz_rec_blocks_table": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Block records",
+            "dataSources": {
+                "primary": "ds_rec_blocks_table"
+            },
+            "description": "A block replaced by a reorg is still a row of its own here"
+        },
+        "viz_rec_io": {
+            "type": "splunk.table",
+            "options": {},
+            "title": "Largest single coin",
+            "dataSources": {
+                "primary": "ds_rec_io"
+            }
+        },
+        "viz_rec_price_line": {
+            "type": "splunk.line",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a"
+                ],
+                "yAxisScale": "log",
+                "yAxisTitleText": "USD"
+            },
+            "title": "BTC price, all time (log)",
+            "dataSources": {
+                "primary": "ds_rec_price_line"
+            }
+        },
+        "viz_rec_price_extremes": {
+            "type": "splunk.table",
+            "options": {},
+            "title": "Price extremes",
+            "dataSources": {
+                "primary": "ds_rec_price_extremes"
+            }
+        },
+        "viz_rec_ath": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('ath') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "$",
+                "unitPosition": "before",
+                "numberPrecision": 0,
+                "majorColor": "#f7931a"
+            },
+            "title": "Price all-time high",
+            "dataSources": {
+                "primary": "ds_rec_price_kpi"
+            }
+        },
+        "viz_rec_drawdown": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('drawdown') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "%",
+                "unitPosition": "after",
+                "numberPrecision": 1,
+                "majorColor": "#dc3545"
+            },
+            "title": "Below all-time high",
+            "dataSources": {
+                "primary": "ds_rec_price_kpi"
+            }
+        },
+        "viz_rec_sanc_txs": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('txs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#dc3545"
+            },
+            "title": "Txs touching listed addresses",
+            "dataSources": {
+                "primary": "ds_rec_sanc_kpi"
+            }
+        },
+        "viz_rec_sanc_recv": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('r') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#ffc107"
+            },
+            "title": "BTC received by listed addresses",
+            "dataSources": {
+                "primary": "ds_rec_sanc_kpi"
+            }
+        },
+        "viz_rec_sanc_sent": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('s') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#f7931a"
+            },
+            "title": "BTC sent by listed addresses",
+            "dataSources": {
+                "primary": "ds_rec_sanc_kpi"
+            }
+        },
+        "viz_rec_sanc_addrs": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('addrs') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "numberPrecision": 0,
+                "majorColor": "#9339f4"
+            },
+            "title": "Listed addresses with activity",
+            "dataSources": {
+                "primary": "ds_rec_sanc_kpi"
+            }
+        },
+        "viz_rec_sanc_time": {
+            "type": "splunk.column",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "seriesColors": [
+                    "#dc3545"
+                ]
+            },
+            "title": "Per month",
+            "dataSources": {
+                "primary": "ds_rec_sanc_time"
+            }
+        },
+        "viz_rec_sanc_table": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "All transactions with a listed address (chain data)",
+            "dataSources": {
+                "primary": "ds_rec_sanc_table"
+            }
+        },
+        "viz_rec_unspent": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Largest unspent outputs >= 100 BTC (hourly)",
+            "dataSources": {
+                "primary": "ds_rec_unspent"
+            },
+            "description": "An output whose spend is not in the index shows up as unspent"
+        },
+        "viz_rec_addr_line": {
+            "type": "splunk.area",
+            "options": {
+                "legendDisplay": "off",
+                "xAxisTitleVisibility": "hide",
+                "nullValueDisplay": "connect",
+                "seriesColors": [
+                    "#f7931a"
+                ],
+                "areaOpacity": 0.3,
+                "yAxisTitleText": "BTC"
+            },
+            "title": "Balance history of the address in the Address input",
+            "dataSources": {
+                "primary": "ds_rec_addr"
+            }
+        },
+        "viz_rec_addr_peak": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('peak') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#f7931a"
+            },
+            "title": "Peak balance ever",
+            "dataSources": {
+                "primary": "ds_rec_addr_kpi"
+            }
+        },
+        "viz_rec_addr_now": {
+            "type": "splunk.singlevalue",
+            "options": {
+                "majorValue": "> primary | seriesByName('now') | lastPoint()",
+                "sparklineDisplay": "off",
+                "trendDisplay": "off",
+                "unit": "BTC",
+                "unitPosition": "after",
+                "numberPrecision": 4,
+                "majorColor": "#1bd8f4"
+            },
+            "title": "Balance now",
+            "dataSources": {
+                "primary": "ds_rec_addr_kpi"
+            }
+        },
+        "viz_long_gaps_2": {
+            "type": "splunk.table",
+            "options": {
+                "count": 10
+            },
+            "title": "Block gaps >= 60 min",
+            "dataSources": {
+                "primary": "ds_long_gaps"
+            }
+        }
+    },
+    "dataSources": {
+        "ds_blocks": {
+            "type": "ds.search",
+            "name": "Blocks (base, one row per height)",
+            "options": {
+                "query": "index=$idx$ sourcetype=btc:blocks\n| eval _it=_indextime\n| sort 0 - _it\n| dedup height\n| fields _time time height hash pool_name nTx regular_tx_count size strippedsize weight weight_utilization_pct difficulty time_since_prev_block_sec total_fees_sats block_subsidy_sats coinbase_value_sats fee_avg_sats fee_rate_median_sat_vb fee_rate_avg_sat_vb fee_rate_max_sat_vb tx_vsize_avg tx_vsize_median segwit_tx_count taproot_input_tx_count taproot_output_tx_count rbf_tx_count op_return_output_count op_return_script_bytes coin_days_destroyed_btc total_vin_count total_vout_count vout_type_*_count"
+            }
+        },
+        "ds_epoch": {
+            "type": "ds.search",
+            "name": "Difficulty epoch + halving (fixed: last 20 days)",
+            "options": {
+                "query": "| tstats count where index=$idx$ sourcetype=btc:blocks by height time\n| eventstats max(height) as tip\n| where floor(height/2016)==floor(tip/2016)\n| stats max(height) as tip min(height) as first_h min(time) as t0 max(time) as t1\n| eval epoch_start=floor(tip/2016)*2016, done=tip-epoch_start+1, remaining=2016-done\n| eval progress_pct=round(done/2016*100,1)\n| eval avg_interval=if(tip>first_h, (t1-t0)/(tip-first_h), 600)\n| eval est_change_pct=round((600/avg_interval-1)*100,2)\n| eval avg_block_min=round(avg_interval/60,2)\n| eval retarget=strftime(t1+remaining*avg_interval, \"%Y-%m-%d %H:%M\")\n| eval next_halving=(floor(tip/210000)+1)*210000, halving_blocks=next_halving-tip\n| eval halving_date=strftime(t1+halving_blocks*600, \"%Y-%m-%d\")",
+                "queryParameters": {
+                    "earliest": "-20d",
+                    "latest": "now"
+                }
+            }
+        },
+        "ds_price_24h": {
+            "type": "ds.search",
+            "name": "Price - last 24h",
+            "options": {
+                "query": "| tstats avg(usd) as USD avg(eur) as EUR where index=$idx$ sourcetype=btc:prices by _time span=1h",
+                "queryParameters": {
+                    "earliest": "-24h",
+                    "latest": "now"
+                },
+                "refresh": "5m",
+                "refreshType": "delay"
+            }
+        },
+        "ds_price_24h_change": {
+            "type": "ds.chain",
+            "name": "Price - 24h change",
+            "options": {
+                "extend": "ds_price_24h",
+                "query": "| stats earliest(USD) as first latest(USD) as last\n| eval change_pct=round((last-first)/first*100,2), sats_per_usd=round(100000000/last,0)"
+            }
+        },
+        "ds_tip": {
+            "type": "ds.chain",
+            "name": "Tip block",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| sort 0 - height | head 1\n| eval median_fee=round(fee_rate_median_sat_vb,1)\n| table height median_fee pool_name"
+            }
+        },
+        "ds_range_stats": {
+            "type": "ds.chain",
+            "name": "Range stats",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| stats count as blocks avg(time_since_prev_block_sec) as avg_sec sum(difficulty) as sum_diff sum(time_since_prev_block_sec) as sum_sec\n| eval avg_block_min=round(avg_sec/60,2), hashrate_ehs=round(sum_diff*pow(2,32)/sum_sec/1e18,1)"
+            }
+        },
+        "ds_price_range": {
+            "type": "ds.search",
+            "name": "Price over range",
+            "options": {
+                "query": "| tstats avg(usd) as USD avg(eur) as EUR where index=$idx$ sourcetype=btc:prices by _time span=$span$"
+            }
+        },
+        "ds_fee_rates_blocks": {
+            "type": "ds.chain",
+            "name": "Block fee rates (block aggregates)",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ median(fee_rate_median_sat_vb) as Median avg(fee_rate_avg_sat_vb) as Average"
+            }
+        },
+        "ds_latest_blocks": {
+            "type": "ds.chain",
+            "name": "Latest blocks",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| sort 0 - height | head 25\n| eval mined=strftime(_time, \"%Y-%m-%d %H:%M\"), ago=tostring(round(now()-_time), \"duration\")\n| eval median=round(fee_rate_median_sat_vb,1), avg=round(fee_rate_avg_sat_vb,1), max=round(fee_rate_max_sat_vb,0)\n| eval fees=round(total_fees_sats/1e8,4), size_mb=round(size/1e6,2), full=round(weight_utilization_pct,1)\n| eval interval=round(time_since_prev_block_sec/60,1)\n| table height mined ago pool_name nTx median avg max fees size_mb full interval\n| rename height as Height, mined as \"Mined (UTC)\", ago as Ago, pool_name as Pool, nTx as TXs, median as \"Median sat/vB\", avg as \"Avg sat/vB\", max as \"Max sat/vB\", fees as \"Fees BTC\", size_mb as \"Size MB\", full as \"Full %\", interval as \"Interval min\""
+            }
+        },
+        "ds_pool_top": {
+            "type": "ds.chain",
+            "name": "Pool share",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| top limit=10 useother=t pool_name\n| fields pool_name count"
+            }
+        },
+        "ds_throughput": {
+            "type": "ds.chain",
+            "name": "Throughput",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ per_second(weight) as wps per_second(nTx) as tps\n| eval vbps=round(wps/4,0), tps=round(tps,2)\n| fields _time vbps tps\n| rename vbps as \"vB/s\", tps as \"tx/s\""
+            }
+        },
+        "ds_hashrate": {
+            "type": "ds.chain",
+            "name": "Hashrate & difficulty",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=1d sum(difficulty) as sd sum(time_since_prev_block_sec) as ss avg(difficulty) as d\n| eval hr=round(sd*pow(2,32)/ss/1e18,1), diff=round(d/1e12,2)\n| trendline sma7(hr) as hr7\n| eval hr7=round(hr7,1)\n| fields _time hr hr7 diff\n| rename hr as \"Hashrate (EH/s)\", hr7 as \"Hashrate 7d MA (EH/s)\", diff as \"Difficulty (T)\""
+            }
+        },
+        "ds_pool_ranking": {
+            "type": "ds.chain",
+            "name": "Pool ranking",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| stats count as blocks sum(eval(if(regular_tx_count==0,1,0))) as empty avg(total_fees_sats) as af avg(fee_rate_median_sat_vb) as amf avg(weight_utilization_pct) as full by pool_name\n| eventstats sum(blocks) as total\n| eval share=round(blocks/total*100,2), af=round(af/1e8,4), amf=round(amf,1), full=round(full,1)\n| sort - blocks\n| streamstats count as rank\n| table rank pool_name blocks share empty af amf full\n| rename rank as \"#\", pool_name as Pool, blocks as Blocks, share as \"Share %\", empty as \"Empty blocks\", af as \"Avg fees BTC\", amf as \"Avg median sat/vB\", full as \"Avg full %\""
+            }
+        },
+        "ds_pool_time": {
+            "type": "ds.chain",
+            "name": "Pool dominance over time",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ count by pool_name limit=10 useother=t"
+            }
+        },
+        "ds_difficulty_epochs": {
+            "type": "ds.chain",
+            "name": "Difficulty adjustments",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| eval epoch=floor(height/2016)\n| stats min(height) as start_h max(height) as end_h count as blocks avg(difficulty) as d min(_time) as t0 max(_time) as t1 by epoch\n| sort 0 epoch\n| streamstats current=f last(d) as prev\n| eval change=round((d-prev)/prev*100,2), diff_t=round(d/1e12,2), start=strftime(t0,\"%Y-%m-%d\"), avg_min=round((t1-t0)/60/(end_h-start_h),2)\n| sort 0 - epoch\n| table epoch start start_h blocks diff_t change avg_min\n| rename epoch as Epoch, start as \"Start (UTC)\", start_h as \"Start height\", blocks as \"Blocks seen\", diff_t as \"Difficulty (T)\", change as \"Change %\", avg_min as \"Avg block min\""
+            }
+        },
+        "ds_fees_subsidy": {
+            "type": "ds.chain",
+            "name": "Fees vs subsidy",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(total_fees_sats) as f sum(block_subsidy_sats) as s\n| eval subsidy=round(s/1e8,4), fees=round(f/1e8,4), share=round(f/(f+s)*100,2)\n| fields _time subsidy fees share\n| rename subsidy as \"Subsidy BTC\", fees as \"Fees BTC\", share as \"Fee share %\""
+            }
+        },
+        "ds_fees_usd": {
+            "type": "ds.search",
+            "name": "Fees & rewards in USD",
+            "options": {
+                "query": "| tstats sum(total_fees_sats) as f sum(block_subsidy_sats) as s avg(usd) as usd\n    where index=$idx$ (sourcetype=btc:blocks OR sourcetype=btc:prices) by _time span=$span$\n| eval fees=round(f/1e8*usd,0), reward=round((f+s)/1e8*usd,0)\n| fields _time reward fees\n| rename reward as \"Total reward USD\", fees as \"Fees USD\""
+            }
+        },
+        "ds_avg_fee": {
+            "type": "ds.chain",
+            "name": "Average fee per tx",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(total_fees_sats) as f sum(regular_tx_count) as n\n| eval avg=round(f/n,0)\n| fields _time avg\n| rename avg as \"Avg fee per tx (sats)\""
+            }
+        },
+        "ds_fee_percentiles": {
+            "type": "ds.search",
+            "name": "Fee-rate percentiles (transactions)",
+            "options": {
+                "query": "index=$idx$ sourcetype=btc:transactions is_coinbase=false fee_sats>0\n| timechart span=$span$ min(fee_rate_sat_vb) as Min perc10(fee_rate_sat_vb) as p10 perc25(fee_rate_sat_vb) as p25 median(fee_rate_sat_vb) as Median perc75(fee_rate_sat_vb) as p75 perc90(fee_rate_sat_vb) as p90\n| rename p10 as \"10th\", p25 as \"25th\", p75 as \"75th\", p90 as \"90th\""
+            }
+        },
+        "ds_fee_bands_time": {
+            "type": "ds.search",
+            "name": "Confirmed vBytes by fee band",
+            "options": {
+                "query": "index=$idx$ sourcetype=btc:transactions is_coinbase=false fee_rate_sat_vb=*\n| eval fr=tonumber(fee_rate_sat_vb), vmb=vsize/1000000\n| eval band=case(fr<1, \"<1\", fr<2, \"1-2\", fr<3, \"2-3\", fr<4, \"3-4\", fr<6, \"4-6\", fr<8, \"6-8\", fr<10, \"8-10\", fr<15, \"10-15\", fr<20, \"15-20\", fr<30, \"20-30\", fr<50, \"30-50\", fr<100, \"50-100\", fr<200, \"100-200\", true(), \"200+\")\n| timechart span=$span$ sum(vmb) by band limit=0\n| fillnull value=0\n| table _time \"<1\" \"1-2\" \"2-3\" \"3-4\" \"4-6\" \"6-8\" \"8-10\" \"10-15\" \"15-20\" \"20-30\" \"30-50\" \"50-100\" \"100-200\" \"200+\""
+            }
+        },
+        "ds_fee_bands_total": {
+            "type": "ds.chain",
+            "name": "Block space share by fee band",
+            "options": {
+                "extend": "ds_fee_bands_time",
+                "query": "| fields - _time\n| stats sum(*) as *\n| eval x=\"Block space\"\n| table x \"<1\" \"1-2\" \"2-3\" \"3-4\" \"4-6\" \"6-8\" \"8-10\" \"10-15\" \"15-20\" \"20-30\" \"30-50\" \"50-100\" \"100-200\" \"200+\""
+            }
+        },
+        "ds_size_weight": {
+            "type": "ds.chain",
+            "name": "Block size & weight",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ avg(size) as s avg(weight) as w avg(weight_utilization_pct) as u\n| eval size=round(s/1e6,3), weight=round(w/1e6,3), full=round(u,1)\n| fields _time size weight full\n| rename size as \"Size (MB)\", weight as \"Weight (MWU)\", full as \"Full %\""
+            }
+        },
+        "ds_tx_count": {
+            "type": "ds.chain",
+            "name": "Transactions per block",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ avg(nTx) as avg sum(nTx) as total\n| eval avg=round(avg,0)\n| rename avg as \"Avg TXs per block\", total as \"TXs confirmed\""
+            }
+        },
+        "ds_block_time": {
+            "type": "ds.chain",
+            "name": "Block interval over time",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ avg(time_since_prev_block_sec) as s count as blocks\n| eval avg=round(s/60,2), target=10\n| fields _time avg target blocks\n| rename avg as \"Avg interval (min)\", target as \"Target (10 min)\", blocks as Blocks"
+            }
+        },
+        "ds_interval_hist": {
+            "type": "ds.chain",
+            "name": "Block interval histogram",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| eval m=floor(time_since_prev_block_sec/60)\n| where m>=0\n| eval m=if(m>=60, 60, m)\n| stats count by m\n| sort 0 m\n| eval m=if(m==60, \"60+\", tostring(m))\n| rename m as \"Minutes since previous block\", count as Blocks"
+            }
+        },
+        "ds_vsize": {
+            "type": "ds.chain",
+            "name": "Tx vsize per block",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ avg(tx_vsize_avg) as a median(tx_vsize_median) as m\n| eval a=round(a,0), m=round(m,0)\n| rename a as \"Avg tx vsize\", m as \"Median tx vsize\""
+            }
+        },
+        "ds_long_gaps": {
+            "type": "ds.chain",
+            "name": "Long block gaps",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| where time_since_prev_block_sec>=3600\n| eval gap=round(time_since_prev_block_sec/60,1), mined=strftime(_time,\"%Y-%m-%d %H:%M\")\n| sort 0 - gap\n| table height mined gap pool_name nTx\n| rename height as Height, mined as \"Mined (UTC)\", gap as \"Gap (min)\", pool_name as Pool, nTx as TXs"
+            }
+        },
+        "ds_adoption": {
+            "type": "ds.chain",
+            "name": "Feature adoption",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(segwit_tx_count) as sw sum(taproot_input_tx_count) as tpi sum(taproot_output_tx_count) as tpo sum(rbf_tx_count) as rbf sum(regular_tx_count) as n\n| eval segwit=round(sw/n*100,2), tp_spend=round(tpi/n*100,2), tp_out=round(tpo/n*100,2), rbf=round(rbf/n*100,2)\n| fields _time segwit tp_spend tp_out rbf\n| rename segwit as \"SegWit spending %\", tp_spend as \"Taproot spending %\", tp_out as \"Paying to Taproot %\", rbf as \"RBF signalling %\""
+            }
+        },
+        "ds_out_types": {
+            "type": "ds.chain",
+            "name": "Output script types",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(vout_type_witness_v0_keyhash_count) as witness_v0_keyhash sum(vout_type_witness_v1_taproot_count) as witness_v1_taproot sum(vout_type_pubkeyhash_count) as pubkeyhash sum(vout_type_scripthash_count) as scripthash sum(vout_type_witness_v0_scripthash_count) as witness_v0_scripthash sum(vout_type_nulldata_count) as nulldata sum(vout_type_anchor_count) as anchor sum(vout_type_pubkey_count) as pubkey sum(vout_type_multisig_count) as multisig sum(vout_type_nonstandard_count) as nonstandard sum(vout_type_witness_unknown_count) as witness_unknown sum(vout_type_other_count) as other\n| eval Other=coalesce(pubkey,0)+coalesce(multisig,0)+coalesce(nonstandard,0)+coalesce(witness_unknown,0)+coalesce(other,0)\n| fields _time witness_v0_keyhash witness_v1_taproot pubkeyhash scripthash witness_v0_scripthash nulldata anchor Other\n| rename witness_v0_keyhash as \"P2WPKH\", witness_v1_taproot as \"P2TR\", pubkeyhash as \"P2PKH\", scripthash as \"P2SH\", witness_v0_scripthash as \"P2WSH\", nulldata as \"OP_RETURN\", anchor as \"P2A (anchor)\""
+            }
+        },
+        "ds_out_types_total": {
+            "type": "ds.chain",
+            "name": "Output script types (range total)",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| stats sum(vout_type_*_count) as *\n| transpose 0 column_name=type\n| rename \"row 1\" as outputs\n| eval type=case(type==\"witness_v0_keyhash\", \"P2WPKH\", type==\"witness_v1_taproot\", \"P2TR\", type==\"pubkeyhash\", \"P2PKH\", type==\"scripthash\", \"P2SH\", type==\"witness_v0_scripthash\", \"P2WSH\", type==\"nulldata\", \"OP_RETURN\", type==\"anchor\", \"P2A (anchor)\", true(), \"Other\")\n| stats sum(outputs) as outputs by type\n| sort 0 - outputs"
+            }
+        },
+        "ds_op_return": {
+            "type": "ds.chain",
+            "name": "OP_RETURN",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(op_return_output_count) as c sum(op_return_script_bytes) as b\n| eval kb=round(b/1000,1)\n| fields _time c kb\n| rename c as \"OP_RETURN outputs\", kb as \"OP_RETURN kB\""
+            }
+        },
+        "ds_cdd": {
+            "type": "ds.chain",
+            "name": "Coin days destroyed",
+            "options": {
+                "extend": "ds_blocks",
+                "query": "| timechart span=$span$ sum(coin_days_destroyed_btc) as cdd\n| eval cdd=round(cdd,0)\n| rename cdd as \"Coin days destroyed\""
+            }
+        },
+        "ds_coin_age": {
+            "type": "ds.search",
+            "name": "Spent value by coin age (inputs)",
+            "options": {
+                "query": "index=$idx$ sourcetype=btc:inputs is_coinbase=false input_age_blocks=*\n| eval age=tonumber(input_age_blocks), btc=value_sats/1e8\n| eval band=case(age<144, \"< 1 day\", age<1008, \"1 day - 1 week\", age<4320, \"1 week - 1 month\", age<26280, \"1 - 6 months\", age<52560, \"6 - 12 months\", age<105120, \"1 - 2 years\", age<262800, \"2 - 5 years\", true(), \"5+ years\")\n| timechart span=$span$ sum(btc) by band limit=0\n| fillnull value=0\n| table _time \"< 1 day\" \"1 day - 1 week\" \"1 week - 1 month\" \"1 - 6 months\" \"6 - 12 months\" \"1 - 2 years\" \"2 - 5 years\" \"5+ years\""
+            }
+        },
+        "ds_price_range_stats": {
+            "type": "ds.chain",
+            "name": "Price range stats",
+            "options": {
+                "extend": "ds_price_range",
+                "query": "| stats earliest(USD) as first latest(USD) as last max(USD) as hi min(USD) as lo latest(EUR) as eur\n| eval change=round((last-first)/first*100,2), sats=round(100000000/last,0)"
+            }
+        },
+        "ds_price_daily": {
+            "type": "ds.search",
+            "name": "Daily OHLC",
+            "options": {
+                "query": "| tstats earliest(usd) as open max(usd) as high min(usd) as low latest(usd) as close\n    where index=$idx$ sourcetype=btc:prices by _time span=1d\n| eval change=round((close-open)/open*100,2), range=round((high-low)/low*100,2)"
+            }
+        },
+        "ds_price_daily_change": {
+            "type": "ds.chain",
+            "name": "Daily change",
+            "options": {
+                "extend": "ds_price_daily",
+                "query": "| eval Up=if(change>=0, change, null()), Down=if(change<0, change, null())\n| fields _time Up Down"
+            }
+        },
+        "ds_price_ohlc_table": {
+            "type": "ds.chain",
+            "name": "Daily OHLC table",
+            "options": {
+                "extend": "ds_price_daily",
+                "query": "| sort 0 - _time\n| eval day=strftime(_time, \"%Y-%m-%d\"), open=round(open,0), high=round(high,0), low=round(low,0), close=round(close,0)\n| table day open high low close change range\n| rename day as \"Day (UTC)\", open as Open, high as High, low as Low, close as Close, change as \"Change %\", range as \"Range %\""
+            }
+        },
+        "ds_stale": {
+            "type": "ds.search",
+            "name": "Stale block headers",
+            "options": {
+                "query": "| tstats latest(status) as status latest(source) as source latest(chaintip_status) as tip_status max(branchlen) as branchlen latest(header_valid) as valid min(_time) as first\n    where index=$idx$ sourcetype=btc:stale_block_headers by height hash\n| sort 0 - height"
+            }
+        },
+        "ds_stale_kpi": {
+            "type": "ds.chain",
+            "name": "Stale KPIs",
+            "options": {
+                "extend": "ds_stale",
+                "query": "| stats dc(hash) as tips dc(height) as heights max(branchlen) as max_branch"
+            }
+        },
+        "ds_export_reorgs": {
+            "type": "ds.search",
+            "name": "Reorgs in export",
+            "options": {
+                "query": "| tstats dc(hash) as n values(hash) as hashes values(pool_name) as pools where index=$idx$ sourcetype=btc:blocks by height\n| where n>1\n| sort 0 - height\n| rename height as Height, n as \"Hashes exported\", hashes as Hashes, pools as Pools"
+            }
+        },
+        "ds_export_reorgs_kpi": {
+            "type": "ds.chain",
+            "name": "Reorg KPI",
+            "options": {
+                "extend": "ds_export_reorgs",
+                "query": "| stats count as reorg_heights"
+            }
+        },
+        "ds_stale_table": {
+            "type": "ds.chain",
+            "name": "Stale table",
+            "options": {
+                "extend": "ds_stale",
+                "query": "| eval first=strftime(first, \"%Y-%m-%d %H:%M\")\n| table height hash status source tip_status branchlen valid first\n| rename height as Height, hash as Hash, status as Status, source as Source, tip_status as \"Chaintip status\", branchlen as \"Branch len\", valid as \"Header valid\", first as \"First observed (UTC)\""
+            }
+        },
+        "ds_stale_time": {
+            "type": "ds.search",
+            "name": "Stale headers over time",
+            "options": {
+                "query": "| tstats dc(hash) as tips where index=$idx$ sourcetype=btc:stale_block_headers by _time span=$span$ source\n| xyseries _time source tips"
+            }
+        },
+        "ds_sanctions": {
+            "type": "ds.search",
+            "name": "Sanctioned tx events (base)",
+            "options": {
+                "query": "index=$idx$ sourcetype=btc:sanctioned_tx_events\n| fields _time event txid direction io_index address value_sats value_btc name first_name sanctions_programs tx_fee_btc tx_vsize first_seen_at block_height replaced_by_txid source detail"
+            }
+        },
+        "ds_sanctions_kpi": {
+            "type": "ds.chain",
+            "name": "Sanctions KPIs",
+            "options": {
+                "extend": "ds_sanctions",
+                "query": "| dedup txid direction io_index\n| stats dc(txid) as txs dc(address) as addrs sum(value_sats) as v\n| eval btc=round(v/1e8,4)"
+            }
+        },
+        "ds_sanctions_pending": {
+            "type": "ds.chain",
+            "name": "Sanctioned txs still in mempool",
+            "options": {
+                "extend": "ds_sanctions",
+                "query": "| stats latest(event) as state latest(_time) as last first(first_seen_at) as first_seen values(address) as addresses values(name) as names sum(eval(if(event==\"seen\", value_sats, 0))) as v by txid\n| where state==\"seen\" OR state==\"unconfirmed\"\n| eval btc=round(v/1e8,8), last=strftime(last, \"%Y-%m-%d %H:%M\")\n| table txid state first_seen last btc addresses names\n| rename txid as TXID, state as State, first_seen as \"First seen\", last as \"Last event (UTC)\", btc as BTC, addresses as Addresses, names as Names"
+            }
+        },
+        "ds_sanctions_pending_kpi": {
+            "type": "ds.chain",
+            "name": "Pending count",
+            "options": {
+                "extend": "ds_sanctions_pending",
+                "query": "| stats count as pending"
+            }
+        },
+        "ds_sanctions_time": {
+            "type": "ds.chain",
+            "name": "Events over time",
+            "options": {
+                "extend": "ds_sanctions",
+                "query": "| timechart span=$span$ count by event"
+            }
+        },
+        "ds_sanctions_entities": {
+            "type": "ds.chain",
+            "name": "By sanctioned entity",
+            "options": {
+                "extend": "ds_sanctions",
+                "query": "| dedup txid direction io_index\n| eval who=coalesce(name, address)\n| stats dc(txid) as txs sum(eval(if(direction==\"input\", value_sats, 0))) as out_v sum(eval(if(direction==\"output\", value_sats, 0))) as in_v values(sanctions_programs) as programs by who\n| eval out_v=round(out_v/1e8,8), in_v=round(in_v/1e8,8)\n| sort 0 - txs\n| rename who as Entity, txs as TXs, in_v as \"Received BTC\", out_v as \"Sent BTC\", programs as Programs"
+            }
+        },
+        "ds_sanctions_latest": {
+            "type": "ds.chain",
+            "name": "Latest events",
+            "options": {
+                "extend": "ds_sanctions",
+                "query": "| sort 0 - _time | head 200\n| eval t=strftime(_time, \"%Y-%m-%d %H:%M:%S\")\n| table t event txid direction address name value_btc block_height replaced_by_txid source detail\n| rename t as \"Time (UTC)\", event as Event, txid as TXID, direction as Dir, address as Address, name as Name, value_btc as BTC, block_height as Block, replaced_by_txid as \"Replaced by\", source as Source, detail as Detail"
+            }
+        },
+        "ds_rec_tx_values": {
+            "type": "ds.search",
+            "name": "Record values (KV store)",
+            "options": {
+                "query": "| inputlookup btc_rec_tx_values\n| eval max_fee_btc=round(max_fee_sats/1e8,8), age_years=round(max_age/52560,1), max_out_btc=round(max_out/1e8,2), max_cdd=round(max_cdd,0)"
+            }
+        },
+        "ds_rec_tx_rows": {
+            "type": "ds.search",
+            "name": "Record-holding transactions (KV store)",
+            "options": {
+                "query": "| inputlookup btc_rec_tx_rows\n| eval _time=t"
+            }
+        },
+        "ds_rec_tx_table": {
+            "type": "ds.chain",
+            "name": "Record transactions table",
+            "options": {
+                "extend": "ds_rec_tx_rows",
+                "query": "| eventstats max(fee_sats) as m1 max(vsize) as m2 max(vin_count) as m3 max(vout_count) as m4 max(input_age_max_blocks) as m5 max(output_value_sats) as m6\n| eval record=mvappend(if(fee_sats==m1,\"Highest fee\",null()), if(vsize==m2,\"Largest transaction\",null()), if(vin_count==m3,\"Most inputs\",null()), if(vout_count==m4,\"Most outputs\",null()), if(input_age_max_blocks==m5,\"Oldest coin moved\",null()), if(output_value_sats==m6,\"Largest output total\",null()))\n| where isnotnull(record)\n| mvexpand record\n| eval date=strftime(_time,\"%Y-%m-%d\"), fee_btc=round(fee_sats/1e8,8), out_btc=round(output_value_sats/1e8,8), age_years=round(input_age_max_blocks/52560,1), rate=round(fee_rate_sat_vb,1)\n| sort 0 record\n| table record date block_height txid fee_btc rate vsize vin_count vout_count age_years out_btc\n| rename record as Record, date as \"Date (UTC)\", block_height as Block, txid as TXID, fee_btc as \"Fee BTC\", rate as \"sat/vB\", vsize as vB, vin_count as Inputs, vout_count as Outputs, age_years as \"Oldest input (y)\", out_btc as \"Output total BTC\""
+            }
+        },
+        "ds_rec_minfee_rows": {
+            "type": "ds.search",
+            "name": "Lowest non-zero fee transactions (KV store)",
+            "options": {
+                "query": "| inputlookup btc_rec_minfee_rows\n| sort 0 fee_rate_sat_vb\n| eval date=strftime(t,\"%Y-%m-%d\"), rate=round(fee_rate_sat_vb,3)\n| table date block_height txid fee_sats rate vsize\n| rename date as \"Date (UTC)\", block_height as Block, txid as TXID, fee_sats as \"Fee sats\", rate as \"sat/vB\", vsize as vB"
+            }
+        },
+        "ds_rec_blocks": {
+            "type": "ds.savedSearch",
+            "name": "Block records (scheduled hourly)",
+            "options": {
+                "ref": "btc_rec_blocks"
+            }
+        },
+        "ds_rec_blocks_table": {
+            "type": "ds.chain",
+            "name": "Block records table",
+            "options": {
+                "extend": "ds_rec_blocks",
+                "query": "| eventstats max(nTx) as a max(total_fees_sats) as b max(size) as c max(time_since_prev_block_sec) as d min(time_since_prev_block_sec) as e max(fee_rate_median_sat_vb) as f\n| eval record=mvappend(if(nTx==a,\"Most transactions\",null()), if(total_fees_sats==b,\"Highest total fees\",null()), if(size==c,\"Largest block\",null()), if(time_since_prev_block_sec==d,\"Longest gap\",null()), if(time_since_prev_block_sec==e,\"Timestamp most before parent\",null()), if(fee_rate_median_sat_vb==f,\"Highest median fee rate\",null()))\n| where isnotnull(record)\n| mvexpand record\n| eval date=strftime(t,\"%Y-%m-%d\"), fees_btc=round(total_fees_sats/1e8,4), size_mb=round(size/1e6,2), gap_min=round(time_since_prev_block_sec/60,1), med=round(fee_rate_median_sat_vb,1)\n| sort 0 record\n| table record height date pool_name nTx fees_btc med size_mb gap_min\n| rename record as Record, height as Height, date as \"Date (UTC)\", pool_name as Pool, nTx as TXs, fees_btc as \"Fees BTC\", med as \"Median sat/vB\", size_mb as \"Size MB\", gap_min as \"Gap to prev (min)\""
+            }
+        },
+        "ds_rec_io": {
+            "type": "ds.search",
+            "name": "Largest coin created / spent (KV store)",
+            "options": {
+                "query": "| inputlookup btc_rec_io\n| eval kind=if(kind==\"created\", \"Largest output ever created\", \"Largest coin ever spent\"), btc=value_sats/1e8, date=strftime(t,\"%Y-%m-%d\"), held=round(input_age_blocks/52560,1)\n| sort 0 kind\n| table kind date block_height txid io addr btc held\n| rename kind as Record, date as \"Date (UTC)\", block_height as Block, txid as TXID, io as Index, addr as Address, btc as BTC, held as \"Held (years)\""
+            }
+        },
+        "ds_rec_price": {
+            "type": "ds.savedSearch",
+            "name": "Daily price, all time (scheduled hourly)",
+            "options": {
+                "ref": "btc_rec_price"
+            }
+        },
+        "ds_rec_price_line": {
+            "type": "ds.chain",
+            "name": "All-time price line",
+            "options": {
+                "extend": "ds_rec_price",
+                "query": "| fields _time close\n| rename close as \"USD (daily close)\""
+            }
+        },
+        "ds_rec_price_extremes": {
+            "type": "ds.chain",
+            "name": "ATH / ATL",
+            "options": {
+                "extend": "ds_rec_price",
+                "query": "| eventstats max(high) as ath min(low) as atl\n| eval which=case(high==ath, \"All-time high\", low==atl, \"All-time low\")\n| where isnotnull(which)\n| eval usd=round(if(which==\"All-time high\", high, low),2), date=strftime(_time,\"%Y-%m-%d\")\n| table which date usd\n| rename which as Record, date as \"Day (UTC)\", usd as USD"
+            }
+        },
+        "ds_rec_price_kpi": {
+            "type": "ds.chain",
+            "name": "ATH + drawdown",
+            "options": {
+                "extend": "ds_rec_price",
+                "query": "| stats max(high) as ath latest(close) as now\n| eval drawdown=round((now-ath)/ath*100,1)"
+            }
+        },
+        "ds_rec_sanc": {
+            "type": "ds.savedSearch",
+            "name": "Sanctioned addresses in chain data (scheduled hourly)",
+            "options": {
+                "ref": "btc_rec_sanc"
+            }
+        },
+        "ds_rec_sanc_table": {
+            "type": "ds.chain",
+            "name": "Sanctioned txs table",
+            "options": {
+                "extend": "ds_rec_sanc",
+                "query": "| sort 0 - t\n| eval date=strftime(t,\"%Y-%m-%d\"), received_btc=round(received_btc,8), sent_btc=round(sent_btc,8)\n| table date height txid names addresses received_btc sent_btc programs\n| rename date as \"Date (UTC)\", height as Block, txid as TXID, names as Names, addresses as Addresses, received_btc as \"Received BTC\", sent_btc as \"Sent BTC\", programs as Programs"
+            }
+        },
+        "ds_rec_sanc_kpi": {
+            "type": "ds.chain",
+            "name": "Sanctioned KPIs",
+            "options": {
+                "extend": "ds_rec_sanc",
+                "query": "| stats count as txs sum(received_btc) as r sum(sent_btc) as s dc(addresses) as addrs\n| eval r=round(r,4), s=round(s,4)"
+            }
+        },
+        "ds_rec_sanc_time": {
+            "type": "ds.chain",
+            "name": "Sanctioned txs per month",
+            "options": {
+                "extend": "ds_rec_sanc",
+                "query": "| eval _time=t\n| timechart span=1mon count as Transactions"
+            }
+        },
+        "ds_rec_unspent": {
+            "type": "ds.search",
+            "name": "Largest unspent outputs (KV store)",
+            "options": {
+                "query": "| inputlookup btc_rec_big_outputs\n| where isnotnull(created) AND isnull(spent)\n| eval btc=value_sats/1e8\n| sort 25 - btc\n| table key address created btc\n| rename key as \"Outpoint\", address as Address, created as \"Created at block\", btc as BTC"
+            }
+        },
+        "ds_rec_addr": {
+            "type": "ds.search",
+            "name": "Address balance history",
+            "options": {
+                "query": "index=$idx$ ((sourcetype=btc:outputs address=\"$addr$\") OR (sourcetype=btc:inputs prevout_address=\"$addr$\"))\n| eval d=if(sourcetype==\"btc:outputs\", value_sats, -value_sats)\n| bin _time span=1d\n| stats sum(d) as d by _time\n| sort 0 _time\n| streamstats sum(d) as bal\n| makecontinuous _time span=1d\n| filldown bal\n| eval balance_btc=round(bal/1e8,8)\n| fields _time balance_btc",
+                "queryParameters": {
+                    "earliest": "0",
+                    "latest": "now"
+                }
+            }
+        },
+        "ds_rec_addr_kpi": {
+            "type": "ds.chain",
+            "name": "Address peak / now",
+            "options": {
+                "extend": "ds_rec_addr",
+                "query": "| stats max(balance_btc) as peak latest(balance_btc) as now"
+            }
+        }
+    },
+    "layout": {
+        "globalInputs": [
+            "input_time",
+            "input_span",
+            "input_idx",
+            "input_addr"
+        ],
+        "tabs": {
+            "items": [
+                {
+                    "label": "Overview",
+                    "layoutId": "layout_1"
+                },
+                {
+                    "label": "Mining",
+                    "layoutId": "layout_2"
+                },
+                {
+                    "label": "Fees & Rewards",
+                    "layoutId": "layout_3"
+                },
+                {
+                    "label": "Blocks",
+                    "layoutId": "layout_4"
+                },
+                {
+                    "label": "Transactions",
+                    "layoutId": "layout_5"
+                },
+                {
+                    "label": "Price",
+                    "layoutId": "layout_6"
+                },
+                {
+                    "label": "Chain Health",
+                    "layoutId": "layout_7"
+                },
+                {
+                    "label": "Sanctions Watch",
+                    "layoutId": "layout_8"
+                },
+                {
+                    "label": "All-time Records",
+                    "layoutId": "layout_9"
+                }
+            ]
+        },
+        "layoutDefinitions": {
+            "layout_1": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1290
+                },
+                "structure": [
+                    {
+                        "item": "viz_kpi_price",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_kpi_change",
+                        "type": "block",
+                        "position": {
+                            "x": 240,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_kpi_height",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_kpi_median_fee",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_kpi_blocktime",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_kpi_hashrate",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_overview",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 720,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_fee_rates_overview",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 120,
+                            "w": 720,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_latest_blocks",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 440,
+                            "w": 1440,
+                            "h": 420
+                        }
+                    },
+                    {
+                        "item": "viz_pool_pie_overview",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 860,
+                            "w": 480,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_throughput",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 860,
+                            "w": 960,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_about",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1180,
+                            "w": 1440,
+                            "h": 110
+                        }
+                    }
+                ]
+            },
+            "layout_2": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1600
+                },
+                "structure": [
+                    {
+                        "item": "viz_epoch_progress",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_epoch_remaining",
+                        "type": "block",
+                        "position": {
+                            "x": 240,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_epoch_change",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_epoch_date",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_halving_blocks",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_halving_date",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_hashrate",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 1440,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_pool_pie",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 480,
+                            "w": 520,
+                            "h": 420
+                        }
+                    },
+                    {
+                        "item": "viz_pool_ranking",
+                        "type": "block",
+                        "position": {
+                            "x": 520,
+                            "y": 480,
+                            "w": 920,
+                            "h": 420
+                        }
+                    },
+                    {
+                        "item": "viz_pool_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 900,
+                            "w": 1440,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_difficulty_epochs",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1240,
+                            "w": 1440,
+                            "h": 360
+                        }
+                    }
+                ]
+            },
+            "layout_3": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1200
+                },
+                "structure": [
+                    {
+                        "item": "viz_fee_bands_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 1440,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_fee_bands_total",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 360,
+                            "w": 1440,
+                            "h": 160
+                        }
+                    },
+                    {
+                        "item": "viz_fee_percentiles",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 520,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_avg_fee",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 520,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_fees_subsidy",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 860,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_fees_usd",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 860,
+                            "w": 720,
+                            "h": 340
+                        }
+                    }
+                ]
+            },
+            "layout_4": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1020
+                },
+                "structure": [
+                    {
+                        "item": "viz_size_weight",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_tx_count",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_block_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 340,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_interval_hist",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 340,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_vsize",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 680,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_long_gaps",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 680,
+                            "w": 720,
+                            "h": 340
+                        }
+                    }
+                ]
+            },
+            "layout_5": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1380
+                },
+                "structure": [
+                    {
+                        "item": "viz_adoption",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 1440,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_out_types",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 340,
+                            "w": 960,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_out_types_total",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 340,
+                            "w": 480,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_op_return",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 700,
+                            "w": 720,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_cdd",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 700,
+                            "w": 720,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_coin_age",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1020,
+                            "w": 1440,
+                            "h": 360
+                        }
+                    }
+                ]
+            },
+            "layout_6": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 880
+                },
+                "structure": [
+                    {
+                        "item": "viz_price_last",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_eur",
+                        "type": "block",
+                        "position": {
+                            "x": 240,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_change",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_hi",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_lo",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_sats",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_price_main",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 1440,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_price_daily_change",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 500,
+                            "w": 720,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_price_ohlc",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 500,
+                            "w": 720,
+                            "h": 380
+                        }
+                    }
+                ]
+            },
+            "layout_7": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1140
+                },
+                "structure": [
+                    {
+                        "item": "viz_stale_tips",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_stale_heights",
+                        "type": "block",
+                        "position": {
+                            "x": 360,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_stale_branch",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_reorg_heights",
+                        "type": "block",
+                        "position": {
+                            "x": 1080,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_stale_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 1440,
+                            "h": 300
+                        }
+                    },
+                    {
+                        "item": "viz_stale_table",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 420,
+                            "w": 1440,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_export_reorgs",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 800,
+                            "w": 720,
+                            "h": 340
+                        }
+                    },
+                    {
+                        "item": "viz_long_gaps_2",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 800,
+                            "w": 720,
+                            "h": 340
+                        }
+                    }
+                ]
+            },
+            "layout_8": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 1240
+                },
+                "structure": [
+                    {
+                        "item": "viz_sanc_txs",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_addrs",
+                        "type": "block",
+                        "position": {
+                            "x": 360,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_btc",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_pending",
+                        "type": "block",
+                        "position": {
+                            "x": 1080,
+                            "y": 0,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 1440,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_entities",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 440,
+                            "w": 720,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_pending_table",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 440,
+                            "w": 720,
+                            "h": 360
+                        }
+                    },
+                    {
+                        "item": "viz_sanc_latest",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 800,
+                            "w": 1440,
+                            "h": 440
+                        }
+                    }
+                ]
+            },
+            "layout_9": {
+                "type": "grid",
+                "options": {
+                    "width": 1440,
+                    "height": 2900
+                },
+                "structure": [
+                    {
+                        "item": "viz_rec_max_fee",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_max_rate",
+                        "type": "block",
+                        "position": {
+                            "x": 240,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_min_fee",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_zero_fee",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_ath",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_drawdown",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 0,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_vsize",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_vin",
+                        "type": "block",
+                        "position": {
+                            "x": 240,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_vout",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_age",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_cdd",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_out",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 120,
+                            "w": 240,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_tx_table",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 240,
+                            "w": 1440,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_rec_blocks_table",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 560,
+                            "w": 1440,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_rec_io",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 880,
+                            "w": 960,
+                            "h": 200
+                        }
+                    },
+                    {
+                        "item": "viz_rec_price_extremes",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 880,
+                            "w": 480,
+                            "h": 200
+                        }
+                    },
+                    {
+                        "item": "viz_rec_price_line",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1080,
+                            "w": 1440,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_rec_minfee",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1400,
+                            "w": 1440,
+                            "h": 320
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_txs",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1720,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_recv",
+                        "type": "block",
+                        "position": {
+                            "x": 360,
+                            "y": 1720,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_sent",
+                        "type": "block",
+                        "position": {
+                            "x": 720,
+                            "y": 1720,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_addrs",
+                        "type": "block",
+                        "position": {
+                            "x": 1080,
+                            "y": 1720,
+                            "w": 360,
+                            "h": 120
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_time",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 1840,
+                            "w": 480,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_rec_sanc_table",
+                        "type": "block",
+                        "position": {
+                            "x": 480,
+                            "y": 1840,
+                            "w": 960,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_rec_unspent",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 2220,
+                            "w": 1440,
+                            "h": 380
+                        }
+                    },
+                    {
+                        "item": "viz_rec_addr_line",
+                        "type": "block",
+                        "position": {
+                            "x": 0,
+                            "y": 2600,
+                            "w": 960,
+                            "h": 300
+                        }
+                    },
+                    {
+                        "item": "viz_rec_addr_peak",
+                        "type": "block",
+                        "position": {
+                            "x": 960,
+                            "y": 2600,
+                            "w": 240,
+                            "h": 300
+                        }
+                    },
+                    {
+                        "item": "viz_rec_addr_now",
+                        "type": "block",
+                        "position": {
+                            "x": 1200,
+                            "y": 2600,
+                            "w": 240,
+                            "h": 300
+                        }
+                    }
+                ]
+            }
+        }
+    }
+}
+]]></definition>
+    <meta type="hiddenElements"><![CDATA[
+{
+    "hideEdit": false,
+    "hideOpenInSearch": false,
+    "hideExport": false
+}
+]]></meta>
+</dashboard>

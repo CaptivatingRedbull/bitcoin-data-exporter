@@ -1,0 +1,20 @@
+[]
+access = read : [ * ], write : [ admin, sc_admin ]
+export = none
+
+# Shared globally so the dashboard JSON also works when pasted into a
+# dashboard in another app (e.g. Search & Reporting).
+[savedsearches]
+export = system
+
+[macros]
+export = system
+
+[transforms]
+export = system
+
+[lookups]
+export = system
+
+[collections]
+export = system

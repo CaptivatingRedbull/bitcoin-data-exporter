@@ -192,6 +192,18 @@ class RpcConfig:
     max_block_weight: int
     halving_interval_blocks: int
     initial_subsidy_sats: int
+    # How rpc/client.py talks to bitcoind: "cli" (a bitcoin-cli subprocess
+    # per call - the original behaviour) or "http" (direct JSON-RPC over a
+    # kept-alive HTTP connection). http_url/cookie_file are only used by
+    # "http"; left unset, both are derived from extra_args
+    # (-rpcconnect/-rpcport/-rpccookiefile/-datadir) so they match whatever
+    # bitcoin-cli would have used.
+    transport: str = "cli"
+    http_url: str | None = None
+    cookie_file: Path | None = None
+    # Worker processes rpc-ingest fetches + parses blocks with while far
+    # behind the tip (see rpc/catchup.py). 1 = strictly sequential, as before.
+    catchup_workers: int = 1
 
     def auth_args(self) -> tuple[str, ...]:
         """-rpcuser=/-rpcpassword= flags, only if both env vars are set and
@@ -248,6 +260,20 @@ def _load_rpc(raw: dict[str, Any], root: Path) -> RpcConfig:
     if halving_interval_blocks < 1:
         raise ConfigError("config.yaml: 'rpc.halving_interval_blocks' must be >= 1")
 
+    transport = str(section.get("transport", "cli"))
+    if transport not in ("cli", "http"):
+        raise ConfigError("config.yaml: 'rpc.transport' must be 'cli' or 'http'")
+
+    http_url = section.get("http_url") or None
+    if http_url is not None and not str(http_url).startswith("http://"):
+        raise ConfigError("config.yaml: 'rpc.http_url' must start with http://")
+
+    cookie_file_raw = section.get("cookie_file") or None
+
+    catchup_workers = int(section.get("catchup_workers", 1))
+    if catchup_workers < 1:
+        raise ConfigError("config.yaml: 'rpc.catchup_workers' must be >= 1")
+
     return RpcConfig(
         bitcoin_cli_path=_require(section, "bitcoin_cli_path", "rpc"),
         extra_args=tuple(section.get("extra_args") or ()),
@@ -266,6 +292,10 @@ def _load_rpc(raw: dict[str, Any], root: Path) -> RpcConfig:
         max_block_weight=max_block_weight,
         halving_interval_blocks=halving_interval_blocks,
         initial_subsidy_sats=int(_require(section, "initial_subsidy_sats", "rpc")),
+        transport=transport,
+        http_url=str(http_url) if http_url is not None else None,
+        cookie_file=_resolve_path(root, str(cookie_file_raw)) if cookie_file_raw else None,
+        catchup_workers=catchup_workers,
     )
 
 
