@@ -311,6 +311,14 @@ Kopie – der Import wird dadurch nie unterbrochen.
 
 Manuell erzwingen: `python run.py update-pools-dataset`.
 
+> **Spaltenreihenfolge ist Vertrag (4.9–4.12):** Die Splunk-/Cribl-
+> Feldkonfiguration adressiert die Spalten von `transactions.csv`/
+> `inputs.csv`/`outputs.csv` nach Position (Kapitel 10.6). Wer eine Spalte
+> in `block_parser.py` hinzufügt, entfernt oder verschiebt, muss
+> `btc_parser_app/export_schema.py` mitziehen und
+> `python splunk/build_field_config.py` ausführen.
+> `tests/test_export_schema.py` schlägt sonst fehl.
+
 ## 4.9 Ausgabeschema: `blocks.csv`
 
 Eine Zeile pro Block. Erzeugt von `block_parser.py::aggregate_block()`.

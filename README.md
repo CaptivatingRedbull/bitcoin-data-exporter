@@ -51,7 +51,8 @@ full_app/
   splunk/                      Splunk add-ons (inputs, index-time parsing, search-time fields, index
                                definition, ingest tuning), build_field_config.py (generates the
                                field confs + Cribl pipeline from btc_parser_app/export_schema.py)
-                               and scripts/ (enable-backfill, fresh-start, bench) - see docs/10, docs/12
+                               and scripts/ (enable-backfill, fresh-start, bench) - see docs/10, docs/12;
+                               dashboards/ + btc-parser-dashboards/: BTC Mempool Explorer (docs/10.9)
   cribl/                       generated prod Cribl pipeline (UF -> Cribl -> Splunk) - see cribl/README.md
   docs/                        full German-language reference
   btc_parser_app/

@@ -22,7 +22,9 @@ Rolle zuzuordnen.
 | `config/pools-v2.json` | Mitgeliefertes Mining-Pool-Signaturdatenset (Snapshot von `mempool/mining-pools`, MIT-lizenziert). |
 | `config/sanctioned_addresses.csv` | Sanktionsliste für `mempool-watch` (`address,name,first_name,sanctions_programs`). Siehe Kapitel 11.5. |
 | `systemd/` | Unit-Templates (eine pro Dauerprozess plus `btc-parser.target`) und `install.sh`. Siehe Kapitel 2.5. |
-| `splunk/` | Splunk-Add-ons für Inputs (Forwarder) und Parsing (`props.conf`). Siehe Kapitel 10. |
+| `splunk/` | Splunk-Apps (`TA-btc-parser-inputs`, `-parsing` (Index-Time, Test-Standalone), `-search` (Search-Time), `-indexes`, `-ingest-tuning`, `btc-parser-dashboards`), die Generatoren `build_field_config.py` (Feld-Confs + Cribl-Pipeline aus `export_schema.py`) und `dashboards/build_btc_mempool_explorer.py` (Dashboard + gespeicherte Suchen), sowie `scripts/` (`btc-splunk-enable-backfill.sh`, `btc-fresh-start.sh`, `btc-splunk-bench.sh`). Siehe Kapitel 10 und 12. |
+| `cribl/` | Generierte Cribl-Pipeline für Prod (UF → Cribl → Splunk) plus Einrichtungsanleitung. Siehe Kapitel 10.1. |
+| `tests/` | `unittest`-Tests (`python -m unittest discover -s tests`): parallele Aufholjagd, RPC-Client, Export-Schema gegen die erzeugten Splunk-Regexe, Dashboard-`tstats` nur auf indizierten Feldern. |
 | `config/XBTUSD_1.csv` / `config/XBTEUR_1.csv` | **Nicht mitgeliefert** – hier die Kraken-1-Minuten-OHLC-Exporte ablegen (siehe Kapitel 6). |
 
 Zur Laufzeit zusätzlich erzeugt (nicht im Repository): `.pids/`,
@@ -36,6 +38,7 @@ mit seinen `state/`- und `export/`-Unterordnern.
 | `__init__.py` | Leer – markiert das Verzeichnis als Python-Paket. |
 | `cli.py` | `argparse`-Einstiegspunkt (`build_parser()`, `main()`). Definiert alle sechs Subkommandos, lädt die Konfiguration, konfiguriert Logging, dispatcht zum jeweiligen Modul. Enthält das `SIGTERM → KeyboardInterrupt`-Shim für `api-poll`. Siehe Kapitel 2. |
 | `config.py` | Lädt und validiert `config.yaml` in typisierte, unveränderliche (`frozen`) Dataclasses (`AppConfig` und Unter-Configs je Sektion). Jedes andere Modul erhält seine Konfiguration als Parameter statt globaler Konstanten. Siehe Kapitel 3. |
+| `export_schema.py` | Spaltenreihenfolge jeder Splunk-seitigen Export-CSV und welche Spalten indizierte Felder werden – einzige Quelle für `splunk/build_field_config.py`. Siehe Kapitel 10.6. |
 
 ### `btc_parser_app/common/` – geteilte Infrastruktur
 

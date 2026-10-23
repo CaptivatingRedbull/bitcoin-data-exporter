@@ -188,8 +188,8 @@ liefern dort nichts mehr. Solche Auswertungen laufen als normale Suche mit
 `stats`/`timechart` über ein begrenztes Zeitfenster, oder langfristig über
 die Block-Aggregate in `btc:blocks`. Beispiele für beides enthält das
 Benchmark-Skript [`splunk/scripts/btc-splunk-bench.sh`](../splunk/scripts/btc-splunk-bench.sh)
-(Gruppen T und R). Die Dashboards/Saved Searches in `btc-parser-dashboards`
-sind darauf noch nicht umgestellt.
+(Gruppen T und R). Das Dashboard und seine gespeicherten Suchen
+(`btc-parser-dashboards`, 10.9) sind darauf umgestellt.
 
 `TRUNCATE` bleibt auf dem Standard: Die einzigen potenziell sehr langen
 Rohfelder (`scriptsig_hex`/`script_hex`) werden gar nicht erst exportiert
@@ -231,3 +231,132 @@ Hochladen mit `ls -lh` die tatsächliche Größe prüfen – der jeweils
 aktuellste Part ist meist nur teilweise gefüllt – und im Zweifel mit
 `head -n <N> <part>.csv > sample.csv` (Kopfzeile bleibt erhalten) weiter
 kürzen, um Ingest-Budget für mehrere Testdurchläufe übrig zu behalten.
+
+## 10.9 Beispiel-Dashboard „BTC Mempool Explorer“ (Dashboard Studio)
+
+Ein Test-Dashboard im Dashboard-Studio-Format, das die bekannten
+mempool.space-Grafiken auf Basis der eigenen Exporte nachbildet. Es liegt
+in zwei inhaltsgleichen Formen vor, beide erzeugt von
+[`splunk/dashboards/build_btc_mempool_explorer.py`](../splunk/dashboards/build_btc_mempool_explorer.py)
+(Änderungen dort vornehmen und das Skript neu ausführen, nicht die
+Ausgaben von Hand bearbeiten):
+
+- [`splunk/dashboards/btc_mempool_explorer.json`](../splunk/dashboards/btc_mempool_explorer.json)
+  – für einen schnellen Test: in Splunk Web *Dashboards → Create New
+  Dashboard → Dashboard Studio → Grid* anlegen, dann *Source* öffnen und
+  den kompletten Inhalt ersetzen. Theme auf *Dark* stellen.
+- [`splunk/btc-parser-dashboards/`](../splunk/btc-parser-dashboards/) –
+  dieselbe Definition als installierbare App (Search Head; Test:
+  Standalone-Instanz, nach `$SPLUNK_HOME/etc/apps/` kopieren und Splunk
+  neu starten). Setzt `TA-btc-parser-search` voraus (Search-Time-Felder,
+  10.2).
+
+Globale Eingaben (über allen Tabs): Zeitraum (Standard: letzte 30 Tage),
+Bucket-Größe für alle Zeitreihen (`$span$`, Standard 1 Tag) und Index
+(`$idx$`, Standard `btc_parser`, siehe 10.7).
+
+| Tab | Inhalt | Quelle |
+|---|---|---|
+| Overview | Preis, Höhe, Median-Fee des Tip-Blocks, mittlere Blockzeit, Hashrate; Tabelle der letzten Blöcke (wie die Block-Leiste auf mempool.space, Fee-Spalten im mempool.space-Farbverlauf) | `btc:blocks`, `btc:prices` |
+| Mining | Difficulty-Epoche (Fortschritt, geschätzte Anpassung, Termin), Halving-Countdown, Hashrate & Difficulty, Pool-Ranking/-Dominanz, Difficulty-Historie | `btc:blocks` |
+| Fees & Rewards | bestätigte vBytes je Fee-Band (Nachbildung des mempool.space-Mempool-Charts), Fee-Perzentile, Subsidy vs. Fees (BTC/USD), Ø Fee pro Transaktion | `btc:transactions`, `btc:blocks`, `btc:prices` |
+| Blocks | Blockgröße/-gewicht, Transaktionen pro Block, Blockintervall und Verteilung, lange Lücken | `btc:blocks` |
+| Transactions | SegWit-/Taproot-/RBF-Anteil, Output-Skripttypen, OP_RETURN, Coin Days Destroyed, ausgegebener Wert nach Coin-Alter | `btc:blocks`, `btc:inputs` |
+| Price | USD/EUR-Verlauf, Tagesänderung, Tages-OHLC | `btc:prices` |
+| Chain Health | Stale-Tips (Kapitel 5), Höhen mit mehr als einem exportierten Blockhash (Reorgs, Kapitel 4.4) | `btc:stale_block_headers`, `btc:blocks` |
+| Sanctions Watch | Ereignisse je Typ, noch unbestätigte Transaktionen, Treffer je gelisteter Entität, letzte Ereignisse (Kapitel 11) | `btc:sanctioned_tx_events` |
+| All-time Records | Rekorde über den gesamten Index unabhängig vom Zeitraum-Picker: höchste/niedrigste Fee, größte Transaktion, meiste In-/Outputs, ältester bewegter Coin, Block-Rekorde, größter einzelner Coin, größte unverbrauchte Outputs ≥ 100 BTC, Preis-ATH/-ATL, alle Transaktionen mit gelisteten Adressen in den Chain-Daten; liest nur vorberechnete Ergebnisse (siehe unten); einzig der Saldoverlauf einer Adresse sucht live, sobald die Eingabe *Address* gesetzt ist | alle |
+
+Hinweise:
+
+- Die Exporte enthalten **keinen** Mempool-Snapshot (der API-Poller
+  exportiert nur `prices`, Kapitel 6.1). Die „Mempool“-Grafiken zeigen
+  deshalb, was im jeweiligen Bucket **bestätigt** wurde – nicht, was
+  gerade wartet.
+- Alle Block-Panels hängen an einer gemeinsamen Basissuche, die pro Höhe
+  nur den zuletzt indizierten Block behält (`dedup height` nach
+  `_indextime`), damit von einem Reorg abgehängte Blöcke (die in Splunk
+  stehen bleiben, siehe 10.5) nicht doppelt zählen. Als nicht
+  transformierende Basissuche behält Splunk davon höchstens 500.000
+  Events – für sehr lange Zeiträume (mehrere Jahre Blöcke) die Panels
+  einzeln als eigene Suchen ausführen.
+- Die Panels auf `btc:transactions`/`btc:inputs` (Fee-Bänder,
+  Fee-Perzentile, Coin-Alter) brauchen Search-Time-Felder (`fee_rate_sat_vb`,
+  `vsize`, `value_sats`, 10.6) und lesen deshalb jede Zeile des Zeitraums –
+  den Zeitraum kurz halten (Tage bis wenige Wochen). Die Difficulty-Epoche und der 24h-Preis
+  verwenden feste Zeiträume (letzte 20 Tage bzw. 24 Stunden),
+  unabhängig vom Zeitraum-Picker.
+- `tstats` nur dort, wo alle verwendeten Felder indiziert sind (10.6):
+  `btc:blocks`, `btc:prices`, `btc:stale_block_headers`. Auf
+  `btc:transactions`/`btc:inputs`/`btc:outputs` gibt es nur `block_height`,
+  `is_coinbase`, `version`, `vin_count`, `vout_count`, `prevout_type`,
+  `prevout_generated`, `relative_locktime_type` und `script_type` – ein
+  `tstats` über ein anderes Feld liefert **stillschweigend nichts**.
+  `tests/test_dashboard.py` prüft jedes `tstats` des Dashboards und der
+  gespeicherten Suchen dagegen.
+- Wo eine Zeile gebraucht wird (z. B. „welche Transaktion hält den
+  Rekord“), ermittelt ein erster `stats`-Durchlauf den Wert, und `map`
+  holt die passenden Zeilen per exaktem Feldvergleich (nur ganzzahlige
+  Felder, da Dezimalwerte anders formatiert sein können als in der CSV).
+  Ein Subsearch käme beim Rebuild über die ganze Chain an sein Zeitlimit.
+  Panels auf derselben Datenbasis hängen als Chain-Searches an einer
+  Basissuche.
+- Der Saldoverlauf einer Adresse und der Sanktionslisten-Abgleich suchen
+  nach Adressen. Die sind als Rohtext-Token eindeutig, die Bloom-Filter
+  überspringen jeden Bucket ohne die Adresse – schnell trotz normaler
+  Suche über die ganze Chain.
+- **Entfallen:** „Largest address balances now“ (Summe je Adresse über
+  jeden je erzeugten Input/Output). Ohne indiziertes `address`/`value_sats`
+  ist das ein Durchlauf über Milliarden Zeilen, der nicht fertig wird.
+  Einzelne Adressen: Eingabe *Address*.
+- Die Spalte `source` von `stale_block_headers.csv`/`sanctioned_tx_events.csv`
+  heißt wie Splunks eingebautes Metadatenfeld `source` (Dateipfad). Zeigen
+  die zugehörigen Panels Dateipfade statt `own_node`/`zmq` usw., kollidiert
+  die Spalte mit dem Metadatenfeld.
+- Die Hashrate wird je Tag als Σ(Difficulty × 2³²) / Σ(Blockintervalle)
+  geschätzt – robust gegenüber angebrochenen Tagen am Rand des Zeitraums.
+
+### Hintergrund-Suchen für den Tab „All-time Records“
+
+Eine Dashboard-Studio-Definition kann gespeicherte Suchen nur
+referenzieren (`ds.savedSearch`), nicht selbst definieren. Die Suchen,
+auf denen der Tab aufbaut, liegen deshalb in der App
+[`splunk/btc-parser-dashboards/`](../splunk/btc-parser-dashboards/) und
+werden vom selben Skript erzeugt (`savedsearches.conf`, `macros.conf`,
+`collections.conf`, `transforms.conf`,
+`lookups/sanctioned_addresses.csv`). Ohne installierte App bleiben die
+Panels dieses Tabs leer bzw. melden eine fehlende Suche/Lookup.
+
+| Art | Suchen | Zeitplan | Dashboard liest |
+|---|---|---|---|
+| Inkrementell (KV Store) | `btc_rec_tx_values`, `btc_rec_tx_rows`, `btc_rec_minfee_rows`, `btc_rec_io`, `btc_rec_big_outputs` – je `<name>_update` und `<name>_rebuild` | `_update` stündlich um :15 über die letzte volle Stunde **Indexierungszeit**; `_rebuild` **nicht geplant**, nur von Hand | `\| inputlookup <name>` |
+| Geplant, komplett | `btc_rec_blocks`, `btc_rec_price`, `btc_rec_sanc` | stündlich um :05 | `ds.savedSearch` (Ergebnis des letzten Laufs) |
+
+- **Inkrementell:** Rekorde (Max/Min) lassen sich zusammenführen – ein
+  neuer Rekord kann nur aus neuen Daten kommen. `_update` aggregiert nur
+  Events, die in der letzten vollen Stunde indiziert wurden
+  (Makro `btc_rec_window`: `_index_earliest=-1h@h _index_latest=@h`),
+  hängt den bisherigen KV-Store-Inhalt an und schreibt das Ergebnis
+  zurück. Die einzige Summe (`zero_fee_txs`) ist nur korrekt, weil sich
+  die Stundenfenster nie überlappen und kein Lauf ausfällt
+  (`realtime_schedule = 0`). `_update` sucht dabei nur Events der letzten
+  7 Tage Ereigniszeit – Daten mit älterem `_time` (Katch-up/Backfill alter
+  Blöcke, Preis-Backfill) erfasst erst ein `_rebuild`.
+- `btc_rec_big_outputs` hält Outputs ≥ 100 BTC und ihre Ausgaben. Zeilen,
+  deren Erzeugung und Ausgabe beide gesehen wurden, fliegen beim Merge
+  raus; übrig bleiben die unverbrauchten (und Ausgaben, deren Erzeugung
+  noch nicht indiziert ist – Inputs/Outputs-Parts kommen in beliebiger
+  Reihenfolge).
+- **Rebuilds:** Ohne indizierte Messwerte ist jeder `_rebuild` ein
+  normaler Durchlauf über die ganze Chain (Transaktionen bzw. alle
+  Inputs/Outputs) und dauert Stunden. Deshalb nicht mehr wöchentlich
+  geplant: **einmal nach dem Backfill** von Hand starten (*Settings →
+  Searches, reports, and alerts → Run*), danach halten die stündlichen
+  `_update` die KV Stores aktuell. Reihenfolge egal, aber nicht alle fünf
+  gleichzeitig.
+- **Index:** Gespeicherte Suchen sehen keine Dashboard-Tokens. Sie
+  verwenden das Makro `btc_index` (`index=btc_parser`) statt `$idx$` – bei
+  anderem Indexnamen dort anpassen.
+- Alle Objekte der App sind global freigegeben (`metadata/default.meta`,
+  `export = system`), damit das JSON auch in einem Dashboard einer anderen
+  App (z. B. *Search & Reporting*) funktioniert.

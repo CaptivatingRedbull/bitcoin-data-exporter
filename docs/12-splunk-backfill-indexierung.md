@@ -262,10 +262,12 @@ Backfill-Zeitraum besorgen oder den Backfill über mehrere Tage verteilen
    `/var/log/btc-fresh-start.log` und
    `/var/log/btc-splunk-enable-backfill.log`, Fortschritt per 12.5.
 
-Die geplanten Suchen von `btc-parser-dashboards` (`btc_rec_*`) während des
-Backfills pausieren (12.4 Punkt 5). Sie verwenden noch `tstats` auf jetzt
-nicht mehr indizierten Feldern und liefern dort leere Ergebnisse
-(`override_if_empty=false` schützt die KV-Store-Inhalte).
+**Dashboard nach dem Backfill:** Die stündlichen `btc_rec_*_update`-Suchen
+von `btc-parser-dashboards` sehen nur Events der letzten 7 Tage
+Ereigniszeit, also keine historischen Blöcke. Ist der Backfill am Tip
+angekommen, die fünf `btc_rec_*_rebuild`-Suchen einmal von Hand starten,
+nacheinander, jede dauert Stunden (Kapitel 10.9). Vorher bleiben die
+Rekord-Panels leer bzw. zeigen nur neue Blöcke.
 
 ## 12.9 Benchmark
 
