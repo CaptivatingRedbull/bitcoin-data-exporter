@@ -14,7 +14,7 @@ Studio definition can only reference saved searches, not define them.
 Edit this script rather than the outputs, then rerun it:
     python3 splunk/dashboards/build_btc_mempool_explorer.py
 
-See docs/10-splunk-integration-und-feldkonzept.md, section 10.9.
+See docs/09-splunk-integration-und-feldkonzept.md, section 9.9.
 """
 
 import json
@@ -388,7 +388,7 @@ chain("ds_avg_fee", "Average fee per tx", "ds_blocks", """
 add_viz("viz_avg_fee", "splunk.column", "Average fee per transaction", "ds_avg_fee",
         **{**CHART_BASE, "legendDisplay": "off"}, seriesColors=[ORANGE], yAxisTitleText="sats")
 
-# fee_rate_sat_vb is a search-time field (docs chapter 10.6), so this scans
+# fee_rate_sat_vb is a search-time field (docs chapter 9.6), so this scans
 # the transactions of the selected range - like the fee-band chart below.
 search("ds_fee_percentiles", "Fee-rate percentiles (transactions)", """
 index=$idx$ sourcetype=btc:transactions is_coinbase=false fee_sats>0
@@ -708,7 +708,7 @@ latest_sanc["context"] = {"eventColors": [
 # also written by this script):
 #   - KV store lookups for everything that needs transactions/inputs/outputs
 #     columns that are only extracted at search time (fees, values,
-#     addresses - docs chapter 10.6), where an all-time scan takes hours:
+#     addresses - docs chapter 9.6), where an all-time scan takes hours:
 #     <name>_update merges the last full hour of newly indexed data every
 #     hour; <name>_rebuild recomputes everything from scratch. The rebuilds
 #     are NOT scheduled - run them by hand once after installing or after a

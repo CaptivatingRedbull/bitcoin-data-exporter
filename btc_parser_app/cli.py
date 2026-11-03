@@ -26,26 +26,14 @@ Commands:
                             One-off: run mempool-watch's matcher against a single tx (in the
                             mempool, or confirmed - then pass its block hash) and print the
                             matches. Writes nothing - for testing the list/matching.
-    api-poll                Run the mempool.space endpoint poller forever (until a 429 or Ctrl-C/SIGTERM),
-                            including the minutely "prices" endpoint that writes
-                            mempool_api.output_dir/prices.csv. Exit code 75 (not 1) on a 429 stop -
-                            see btc_parser_app/api/poller.py::EXIT_RATE_LIMITED - so a systemd unit
-                            can restart on a real crash without restart-looping on a 429.
     update-pools-dataset    Force-refresh config/pools-v2.json from GitHub
 
-Historic price gap backfill (the one-time period between a Kraken CSV
-import and the first live api-poll/Cribl-forwarded minute) is a separate,
-standalone script - not a subcommand of this file, since it takes its
-parameters on the command line instead of from config.yaml:
-    python backfill_price_gap.py --start-timestamp UNIX --end-timestamp UNIX --export-dir PATH
-See btc_parser_app/api/price_gap_backfill.py for details.
-
-For always-on production use, don't invoke this directly - use ../start.sh,
-(or the systemd units in ../systemd/), which also make sure the four
+For always-on production use, don't invoke this directly - use ../start.sh
+(or the systemd units in ../systemd/), which also make sure the three
 long-running commands run detached with logs under logging.log_dir.
 
-See full_app/README.md for details and full_app/config/config.yaml for
-every setting these commands read.
+See README.md for details and config/config.yaml for every setting these
+commands read.
 """
 
 from __future__ import annotations
@@ -53,19 +41,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import signal
 import sys
 
 import yaml
 
-from btc_parser_app.api.client import FetchError, RateLimited
-from btc_parser_app.api.mining_pools_dataset import refresh as refresh_pools_dataset
-from btc_parser_app.api.poller import run_poller
+from btc_parser_app.common.http_fetch import FetchError
 from btc_parser_app.common.logging_setup import configure_logging
 from btc_parser_app.config import ConfigError, load_config
 from btc_parser_app.rpc.client import RpcCliError
 from btc_parser_app.rpc.ingest import run_rpc_ingest
 from btc_parser_app.rpc.mempool_watch import check_single_tx, run_mempool_watch
+from btc_parser_app.rpc.mining_pools_dataset import refresh as refresh_pools_dataset
 from btc_parser_app.rpc.stale_blocks import run_stale_blocks_ingest
 
 
@@ -83,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     #   run.py <command> --config PATH   (argparse error: unrecognized arguments)
     parser = argparse.ArgumentParser(prog="btc_parser_app", description=__doc__)
     parser.add_argument(
-        "--config", default=None, help="Path to config.yaml (default: full_app/config/config.yaml)"
+        "--config", default=None, help="Path to config.yaml (default: config/config.yaml)"
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -109,7 +95,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Block containing the tx - required for a confirmed tx unless the node runs -txindex",
     )
-    subparsers.add_parser("api-poll", help="Run the mempool.space endpoint poller")
     subparsers.add_parser(
         "update-pools-dataset", help="Force-refresh config/pools-v2.json from GitHub"
     )
@@ -126,8 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         # ConfigError covers our own validation (missing/out-of-range
         # values); plain ValueError/TypeError covers a non-numeric or null
         # value hitting int()/float() in config.py's loaders; yaml.YAMLError
-        # covers malformed YAML syntax. All three used to produce a raw
-        # traceback instead of this clean message + exit code.
+        # covers malformed YAML syntax. All three get this clean message +
+        # exit code instead of a raw traceback.
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
@@ -160,18 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         run_mempool_watch(config)
         return 0
 
-    if args.command == "api-poll":
-        # run_poller only breaks its loop on KeyboardInterrupt (SIGINT).
-        # When started detached (e.g. by start.sh/nohup) it only ever gets
-        # SIGTERM, so route that through the same handler for a clean stop
-        # instead of an abrupt kill.
-        signal.signal(signal.SIGTERM, signal.default_int_handler)
-        return run_poller(config.mempool_api)
-
     if args.command == "update-pools-dataset":
         try:
             refresh_pools_dataset(config.mining_pools_dataset)
-        except (RateLimited, FetchError, ValueError) as exc:
+        except (FetchError, ValueError) as exc:
             print(f"Failed to refresh pools dataset: {exc}", file=sys.stderr)
             return 1
         return 0

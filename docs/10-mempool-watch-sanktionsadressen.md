@@ -1,11 +1,11 @@
-# 11. Mempool-Watch: Sanktionsadressen im Mempool
+# 10. Mempool-Watch: Sanktionsadressen im Mempool
 
 [← Index](00-index.md)
 
 Kommando: `mempool-watch` · Einstiegspunkt:
 `btc_parser_app/rpc/mempool_watch.py::run_mempool_watch()`
 
-## 11.1 Zweck
+## 10.1 Zweck
 
 `mempool-watch` prüft jede Transaktion, die in den Mempool des eigenen
 Nodes gelangt, gegen eine Liste sanktionierter Adressen und exportiert
@@ -27,7 +27,7 @@ Ein Treffer liegt vor, wenn eine Sanktionsadresse
 - **ausgibt** – ein Input der Transaktion gibt einen Output aus, der an
   diese Adresse ging (`direction = input`).
 
-## 11.2 Node-Konfiguration
+## 10.2 Node-Konfiguration
 
 In der `bitcoin.conf` des Nodes:
 
@@ -68,9 +68,9 @@ NetworkPolicy auf den Parser-Host beschränken.
 
 In `config.yaml` dann `mempool_watch.zmq_endpoint` auf dieselbe Adresse
 aus Sicht des Parser-Hosts setzen (z. B. `tcp://10.42.5.56:28332`), siehe
-Kapitel 3.7.
+Kapitel 3.5.
 
-## 11.3 Erkennungswege
+## 10.3 Erkennungswege
 
 ### ZMQ `sequence` (primär, nahezu in Echtzeit)
 
@@ -114,7 +114,7 @@ ZMQ-Lücke bzw. RPC-Störung:
    kein Ereignis ankam (Downtime, verlorene Nachrichten), wird in den
    letzten Blöcken gesucht (ab der Höhe ihres ersten Auftauchens, höchstens
    `max_confirmation_scan_blocks` zurück): gefunden → `confirmed`, sonst
-   `replaced`/`removed` (siehe 11.6).
+   `replaced`/`removed` (siehe 10.6).
 3. Bestätigte, verfolgte Transaktionen werden auf Reorgs geprüft und ab
    `forget_after_confirmations` Bestätigungen nicht mehr verfolgt.
 
@@ -133,7 +133,7 @@ von bis zu `reconcile_interval_seconds` – dafür in diesem Modus z. B. 30
 statt 300 setzen. Nützlich, solange ZMQ am Node noch nicht eingerichtet
 ist.
 
-## 11.4 Adressabgleich
+## 10.4 Adressabgleich
 
 Pro neuer Transaktion ein Aufruf `getrawtransaction <txid> 2`:
 
@@ -150,9 +150,9 @@ Transaktionen, die schon wieder aus dem Mempool verschwunden sind, bevor
 sie abgerufen werden konnten (z. B. innerhalb von Millisekunden per RBF
 ersetzt), liefern „No such mempool transaction“ und werden ohne
 Wiederholung übersprungen (`retry_rpc_errors=False`,
-Kapitel 8.2).
+Kapitel 7.2).
 
-## 11.5 Sanktionsliste
+## 10.5 Sanktionsliste
 
 `mempool_watch.sanctions_list_paths` – eine oder mehrere CSV-Dateien,
 standardmäßig [`config/sanctioned_addresses.csv`](../config/sanctioned_addresses.csv):
@@ -182,10 +182,10 @@ aufgenommene Adresse wird also auch in bereits wartenden Transaktionen
 erkannt. Eine kaputte Änderung (Datei unlesbar, keine `address`-Spalte)
 wird geloggt, die zuletzt gültige Liste bleibt aktiv.
 
-## 11.6 Ausgabeschema: `sanctioned_tx_events.csv`
+## 10.6 Ausgabeschema: `sanctioned_tx_events.csv`
 
 `mempool_watch.output_dir/sanctioned_tx_events.csv` (rotiert wie jede
-Append-only-CSV, Kapitel 7.3). **Eine Zeile pro Treffer-Input/-Output
+Append-only-CSV, Kapitel 6.3). **Eine Zeile pro Treffer-Input/-Output
 pro Ereignis** – zahlt eine Transaktion z. B. an zwei gelistete
 Adressen, erzeugt jedes Ereignis zwei Zeilen. Jede Zeile ist damit für
 sich allein alarmierbar.
@@ -237,11 +237,11 @@ Zusätzlich loggt jedes `seen` eine `WARNING`-Zeile mit allen Treffern in
 `mempool-watch.log` bzw. im Journal – ein Treffer ist also auch ohne
 Splunk sofort sichtbar.
 
-## 11.7 Interner Zustand: `flagged.json`
+## 10.7 Interner Zustand: `flagged.json`
 
 `mempool_watch.state_dir/flagged.json` (nie Splunk-seitig) – ein Eintrag
 pro aktuell verfolgter Treffer-Transaktion, atomar komplett neu
-geschrieben bei jeder Änderung (Kapitel 7, `atomic_write.py`). Ein
+geschrieben bei jeder Änderung (Kapitel 6, `atomic_write.py`). Ein
 Eintrag existiert vom `seen` bis entweder zum Verlassen des Mempools ohne
 Blockaufnahme (`replaced`/`removed`) oder bis der bestätigende Block
 `forget_after_confirmations` tief ist. Da nur Treffer darin stehen,
@@ -257,7 +257,7 @@ Damit ist ein Neustart unkritisch:
 
 Nicht persistiert wird die Menge der bereits geprüften, unauffälligen
 txids – nach jedem Neustart wird der Mempool daher einmal vollständig
-geprüft (11.3).
+geprüft (10.3).
 
 Absturz genau zwischen dem Schreiben einer Exportzeile und dem Speichern
 von `flagged.json`: Das eine Ereignis kann nach dem Neustart doppelt
@@ -265,7 +265,7 @@ erscheinen. Das ist derselbe bewusste Kompromiss wie in der
 Stale-Blocks-Pipeline (Kapitel 5) – lieber ein seltenes Duplikat als ein
 verlorenes Ereignis.
 
-## 11.8 Testen
+## 10.8 Testen
 
 Die gelisteten Adressen sind überwiegend öffentlich bekannt und inaktiv –
 echte Treffer sind selten. Zwei Wege, die Kette trotzdem zu prüfen:
@@ -300,7 +300,7 @@ Bestätigung ein `confirmed`. Die Testliste danach wieder entfernen – die
 Änderung an der Konfiguration braucht einen Neustart, das Leeren der
 Testdatei nicht.
 
-## 11.9 Abgrenzung und Splunk-Alert
+## 10.9 Abgrenzung und Splunk-Alert
 
 `mempool-watch` sieht nur, was durch den Mempool **dieses** Nodes läuft.
 Eine Transaktion, die direkt/privat an einen Miner übermittelt wurde,
@@ -319,9 +319,9 @@ index=btc_parser sourcetype=btc:sanctioned_tx_events event=seen
 
 Ein Alert auf `event=confirmed` zeigt entsprechend, dass eine solche
 Transaktion tatsächlich gemined wurde. Splunk-Input/Sourcetype:
-Kapitel 10.3/10.4.
+Kapitel 9.3/9.4.
 
-## 11.10 Beendigung
+## 10.10 Beendigung
 
 `SIGTERM`/`SIGINT` setzen wie bei den anderen Diensten nur ein
 Stop-Event (`common/stop_signal.py`); die Schleife beendet sich nach dem

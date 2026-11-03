@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
-# Installs/updates/removes the systemd units for btc_parser_app's four
-# long-running components (rpc-ingest, stale-blocks-ingest, api-poll,
-# mempool-watch) plus the btc-parser.target that groups them.
+# Installs/updates/removes the systemd units for btc_parser_app's three
+# long-running components (rpc-ingest, stale-blocks-ingest, mempool-watch)
+# plus the btc-parser.target that groups them.
 #
 # Why this exists instead of just start.sh/stop.sh: those never restart a
 # crashed process and don't survive a reboot on their own (see
 # docs/02-installation-und-betrieb.md, "Gehaerteter Dauerbetrieb: systemd-
-# Units"). A weekly OS reboot (routine on this host) needs the four
+# Units"). A weekly OS reboot (routine on this host) needs the three
 # components to come back up on their own - that's what `systemctl enable`
-# gives us. The one wrinkle: api-poll deliberately exits on an HTTP 429
-# instead of retrying (docs/09), and a naive `Restart=always` would just
-# restart-loop straight back into the same rate limit. The installed
-# api-poll unit uses RestartPreventExitStatus=75 (matching
-# btc_parser_app/api/poller.py's EXIT_RATE_LIMITED) so a *real* crash still
-# gets restarted, but a 429 stop does not - see the comments in
-# btc-parser-api-poll.service.template for the full breakdown.
+# gives us.
 #
 # Usage (run as root - it writes to /etc/systemd/system):
 #   sudo systemd/install.sh [--user NAME] [--config PATH] [--no-start]
@@ -32,7 +26,7 @@ set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
 UNIT_DIR="/etc/systemd/system"
-UNITS=(btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-api-poll btc-parser-mempool-watch)
+UNITS=(btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-mempool-watch)
 
 APP_USER="${SUDO_USER:-$(id -un)}"
 CONFIG_PATH=""
@@ -83,9 +77,8 @@ if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
   exit 1
 fi
 
-# requirements.txt grows over time (e.g. pyzmq for mempool-watch) - an
-# existing venv from an older checkout would otherwise only fail once the
-# new unit starts, as a restart loop in the journal.
+# A venv that's missing a package from requirements.txt would otherwise
+# only fail once a unit starts, as a restart loop in the journal.
 if ! "$APP_DIR/.venv/bin/python" -c "import polars, requests, yaml, zmq" 2>/dev/null; then
   echo "The venv at $APP_DIR/.venv is missing packages from requirements.txt - update it first:" >&2
   echo "  $APP_DIR/.venv/bin/pip install -r $APP_DIR/requirements.txt" >&2
@@ -97,9 +90,10 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Guard against running the same rpc-ingest/stale-blocks-ingest/api-poll/
-# mempool-watch process under both start.sh's nohup+pidfile tracking AND systemd at once -
-# two copies writing the same output/state files would corrupt them.
+# Guard against running the same rpc-ingest/stale-blocks-ingest/
+# mempool-watch process under both start.sh's nohup+pidfile tracking AND
+# systemd at once - two copies writing the same output/state files would
+# corrupt them.
 PID_DIR="$APP_DIR/.pids"
 if [[ -d "$PID_DIR" ]]; then
   for pid_file in "$PID_DIR"/*.pid; do
@@ -163,9 +157,9 @@ systemctl enable btc-parser.target
 
 if [[ "$START_UNITS" -eq 1 ]]; then
   systemctl start btc-parser.target
-  # Also start each newly added unit (e.g. mempool-watch) explicitly - see
-  # NEW_UNITS above. Only the new ones: an existing unit that's stopped is
-  # stopped on purpose (e.g. api-poll after an HTTP 429) and must stay so.
+  # Also start each newly installed unit explicitly - see NEW_UNITS above.
+  # Only the new ones: an existing unit that's stopped is stopped on
+  # purpose and must stay so.
   for unit in "${NEW_UNITS[@]}"; do
     systemctl start "$unit.service"
   done
@@ -182,10 +176,7 @@ fi
 for unit in "${UNITS[@]}"; do
   echo "  systemctl status $unit.service"
 done
-echo "  journalctl -u btc-parser-api-poll.service -f   # (etc. per unit)"
+echo "  journalctl -u btc-parser-rpc-ingest.service -f   # (etc. per unit)"
 echo ""
-echo "All four are now enabled, so a reboot (e.g. the weekly maintenance"
-echo "restart) brings them back automatically. api-poll will NOT"
-echo "restart-loop after an HTTP 429 (exit code 75 is excluded via"
-echo "RestartPreventExitStatus) - restart it by hand once the rate limit"
-echo "has cooled off: systemctl start btc-parser-api-poll.service"
+echo "All three are now enabled, so a reboot (e.g. the weekly maintenance"
+echo "restart) brings them back automatically."

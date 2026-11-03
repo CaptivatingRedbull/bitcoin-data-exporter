@@ -2,65 +2,23 @@
 # btc_parser_app configuration
 #
 # Every tunable in the app lives here so behaviour can be changed without
-# touching code: API endpoints, polling cadence, rate-limit budget, RPC
-# connection details, and the mining-pool signature dataset location.
+# touching code: RPC connection details, polling cadence, output/state
+# paths, the mining-pool signature dataset and the sanctions list.
 #
-# Paths are relative to the full_app/ directory (this file's parent's
-# parent), regardless of the working directory the app is launched from.
+# Paths are relative to the repository root (this file's parent's parent),
+# regardless of the working directory the app is launched from.
 # Absolute paths are also accepted anywhere a path is expected.
 # =============================================================================
 
 logging:
   level: INFO
   # Every command writes rotating log files here (in addition to stdout),
-  # one file per command name (e.g. rpc-ingest.log, api-poll.log). This is
+  # one file per command name (e.g. rpc-ingest.log, mempool-watch.log). This is
   # what start.sh's background services log to. Lives under parser-data/
   # alongside state/ and export/ (see rpc.output_dir/state_dir below) purely
   # for one shared, easy-to-find root - logs are never Splunk-facing exports
   # or app state the way those two are.
   log_dir: "parser-data/logs"
-
-# -----------------------------------------------------------------------
-# mempool.space HTTP API fetcher ("api-poll" command)
-# -----------------------------------------------------------------------
-mempool_api:
-  base_url: "https://mempool.space"
-
-  # Splunk-facing - point a `monitor` (tailing, non-destructive) input here.
-  # Not `batch`: every endpoint's <name>.csv (including prices.csv) is one
-  # ever-growing/rotating file, so there's no per-write "complete file" the
-  # way rpc.output_dir's per-block exports have once caught up - and
-  # prices.csv specifically must never be deleted out from under this app,
-  # since backfill_price_gap.py reads its full history back to dedupe (see
-  # btc_parser_app/api/price_gap_backfill.py).
-  output_dir: "parser-data/export/api"
-
-  request_timeout_seconds: 20
-  # Transient connection-level failures (reset connections, SSL EOF, etc.)
-  # get a couple of quick retries. This is separate from 429 handling,
-  # which never retries and halts the affected loop instead.
-  max_connection_retries: 2
-  retry_backoff_seconds: 3.0
-
-  # Shared token-bucket budget covering every request this app makes
-  # against mempool.space via api-poll. requests_per_minute is the
-  # steady-state refill rate; bucket_size is the burst allowance (how many
-  # requests can fire back-to-back before the rate limit kicks in). Only
-  # the live `prices` poll below draws from this (60s interval, so ~1
-  # req/min) - backfill_price_gap.py is a separate standalone script with
-  # its own --rate-limit-per-second, not governed by this budget.
-  rate_limit:
-    requests_per_minute: 10
-    bucket_size: 10
-
-  # One row group (CSV) per endpoint. `parser` selects the row-shaping
-  # function in btc_parser_app.api.mempool_endpoints - add a new endpoint by
-  # writing a `parse_<name>` function there and an entry here.
-  endpoints:
-    - name: prices
-      path: /api/v1/prices
-      parser: prices
-      interval_seconds: 60
 
 # -----------------------------------------------------------------------
 # Mining-pool signature dataset used by the RPC-side mining pool extractor
@@ -100,17 +58,7 @@ rpc:
   # meant to be safe to commit. Use rpcuser_env/rpcpassword_env below (or a
   # cookie file reachable via -datadir/-rpccookiefile in extra_args)
   # instead.
-  #
-  # Production deployment (see ../bitcoin-storage-ssh.yaml,
-  # ../bitcoin-core.yaml): full_app runs on the bitcoin-storage-ssh pod,
-  # which shares bitcoind's data volume (mounted there at /bitcoin - same
-  # PVC as bitcoind's own /var/lib/bitcoin) but is a *separate* pod/network
-  # namespace from bitcoin-core, whose RPC is currently rpcbind=127.0.0.1
-  # with a NetworkPolicy blocking all ingress. Once that reachability is
-  # sorted out on the cluster side, point at it here - the cookie file is
-  # already right there on the shared volume, so no rpcuser/rpcpassword
-  # should be needed:
-  #   extra_args: ["-rpcconnect=<address you expose bitcoind RPC on>", "-rpcport=8332", "-rpccookiefile=/bitcoin/.cookie"]
+  # For the production pod see config.production.yaml.
   extra_args: []
 
   # Names of environment variables holding RPC credentials, read at
@@ -166,7 +114,7 @@ rpc:
   cli_timeout_seconds: 30
 
   # How to talk to bitcoind (see rpc/client.py):
-  #   "cli"  - one bitcoin-cli subprocess per call (the original behaviour).
+  #   "cli"  - one bitcoin-cli subprocess per call (default).
   #   "http" - direct JSON-RPC over a kept-alive HTTP connection. Same
   #            results, retries and timeouts (max_cli_retries etc. above
   #            apply per call either way), minus two process spawns and
@@ -183,8 +131,7 @@ rpc:
   # cookie_file: "/var/lib/bitcoin/.cookie"
 
   # Worker processes rpc-ingest fetches + parses blocks with while catching
-  # up (see rpc/catchup.py). 1 = strictly sequential (the original
-  # behaviour). Only used for heights more than max_reorg_depth below the
+  # up (see rpc/catchup.py). 1 = strictly sequential (default). Only used for heights more than max_reorg_depth below the
   # tip; output (parts, state files, ordering) is identical either way.
   # Pair with transport: "http", and make sure bitcoind's -rpcthreads is at
   # least this plus a few for the other services.

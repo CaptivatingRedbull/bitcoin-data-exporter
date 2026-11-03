@@ -1,11 +1,11 @@
-# 9. Logging, Fehlerbehandlung und bekannte Einschränkungen
+# 8. Logging, Fehlerbehandlung und bekannte Einschränkungen
 
 [← Index](00-index.md)
 
-## 9.1 Logging
+## 8.1 Logging
 
 Gesteuert über `logging.level` (Standard `INFO`) und `logging.log_dir`
-(Standard `parser-data/logs`, relativ zu `full_app/`) in `config.yaml`
+(Standard `parser-data/logs`, relativ zum Repository-Root) in `config.yaml`
 (`btc_parser_app/common/logging_setup.py::configure_logging()`).
 
 Jedes Kommando loggt sowohl nach stdout als auch in eine rotierende Datei
@@ -21,8 +21,6 @@ im Format `%Y-%m-%dT%H:%M:%S%z` (inklusive Zeitzonen-Offset des Hosts).
 
 Hochfrequente Einzelzeilen-Logs loggen bewusst auf `DEBUG`, nicht `INFO`:
 
-- Die "wrote N row(s)"-Zeile des API-Pollers bei jedem einzelnen Abruf
-  (`poller.py::fetch_and_write()`).
 - Die "Parsing block N"-Zeile von `rpc-ingest` pro Block während einer
   Genesis-Aufholjagd (`ingest.py::_process_height()`).
 - Der "skipping refresh"-Hinweis bei jedem No-op-Check des
@@ -37,10 +35,10 @@ sichtbar, auch ohne Splunk. Die Folge-Ereignisse (`confirmed`,
 `logging.level: DEBUG` in `config.yaml` setzen, falls dieses
 Detailniveau gebraucht wird. Das Standardlevel `INFO` liefert weiterhin
 Start-Zusammenfassungen, Warnungen, Batch-Fortschrittszeilen und alles,
-was tatsächlich Aufmerksamkeit braucht (ein 429, ein Reorg, ein
-RPC-Ausfall).
+was tatsächlich Aufmerksamkeit braucht (ein Reorg, ein RPC-Ausfall, ein
+gescheiterter GitHub-Abruf).
 
-## 9.2 Fehlerbehandlungs-Philosophie
+## 8.2 Fehlerbehandlungs-Philosophie
 
 Die Anwendung folgt durchgängig einem Prinzip: **transiente Fehler
 werden mit begrenzten, konfigurierbaren Wiederholungen abgefedert;
@@ -51,68 +49,29 @@ automatischen Entscheids.**
 | Fehlerart | Verhalten |
 |---|---|
 | Transiente `bitcoin-cli`-Fehler (kurzer Node-Restart, Cookie-Rotation, Netzwerk-Blip) | Bis zu `rpc.max_cli_retries`-mal wiederholt, dann `RpcCliError` – `rpc-ingest` fängt dies ab, wartet `rpc.poll_interval_seconds` und versucht den ganzen Durchlauf erneut. Bereits Checkpointetes bleibt erhalten. |
-| Transiente HTTP-Verbindungsfehler (Reset, SSL-EOF, DNS) | Bis zu `mempool_api.max_connection_retries`-mal wiederholt, dann `FetchError` – der betroffene Poll-Zyklus wird übersprungen, der Poller läuft weiter. |
-| HTTP 429 (Rate Limit) von mempool.space | **Nie automatisch wiederholt.** Der gesamte `api-poll`-Prozess hält an (siehe 9.3). |
+| Transiente HTTP-Verbindungsfehler beim Abruf der GitHub-Datensets (Reset, SSL-EOF, DNS) | Bis zu zweimal wiederholt (`common/http_fetch.py`), dann `FetchError` – `stale-blocks-ingest` versucht den GitHub-Durchlauf beim nächsten Weckzyklus erneut, der Mining-Pool-Refresh behält die lokale Kopie (siehe unten). |
 | Reorg-Rückwärtssuche findet keinen gemeinsamen Vorfahren innerhalb `rpc.max_reorg_depth`, oder trifft auf einen nie indizierten Block | `rpc-ingest` wirft eine Exception und stoppt – erfordert manuelles Eingreifen. |
 | Fehlendes/kaputtes Mining-Pool-Signaturdatenset | Warnung geloggt, `rpc-ingest` läuft mit `pool_* = None` weiter. |
 | Fehlgeschlagener Refresh des Mining-Pool-Datensets | Warnung geloggt, bestehende lokale Kopie bleibt in Verwendung. |
 | Fehlerhafte/ungültige Konfiguration (`config.yaml`) | Klare Fehlermeldung auf stderr, Exit-Code 2 – kein roher Traceback. |
-| Ungültige `mempool_endpoints`-Antwort (Parser wirft eine Exception) | Warnung geloggt, dieser Poll-Zyklus wird übersprungen; der Poller läuft weiter. |
 | Header, der nicht zum behaupteten Hash passt (Stale-Blocks-Pipeline) | Verworfen (Status `unusable`), Warnung geloggt – kein Abbruch. |
 | `mempool-watch`: Node per RPC nicht erreichbar | Fehler geloggt, 30 s Pause, danach ein vollständiger Abgleich – verpasste Ereignisse werden so nachgeholt, kein Abbruch. |
 | `mempool-watch`: ZMQ-Nachrichten verloren / Node neu gestartet (Lücke im Nachrichtenzähler) | Warnung geloggt, sofortiger vollständiger Abgleich. |
 | `mempool-watch`: seit `reconcile_interval_seconds` keine einzige ZMQ-Nachricht | Warnung geloggt (typisch: `zmqpubsequence` fehlt oder Port nicht erreichbar – ZMQ selbst meldet so etwas nie als Fehler); der periodische Abgleich erkennt Treffer weiterhin, nur mit Verzögerung. |
 | `mempool-watch`: Sanktionsliste nach einer Änderung nicht lesbar/ohne `address`-Spalte | Fehler geloggt, die zuletzt gültige Liste bleibt aktiv. Beim Start (keine vorherige Liste) bricht der Prozess dagegen ab. |
 
-## 9.3 Bekannte Einschränkungen / bewusste Design-Grenzen
+## 8.3 Bekannte Einschränkungen / bewusste Design-Grenzen
 
 Diese Punkte sind **keine offenen Bugs**, sondern bewusste
 Design-Entscheidungen, die beim Betrieb der Anwendung berücksichtigt
 werden sollten:
 
-### Kein Auto-Restart nach einem 429
-
-`api-poll` hält bei einem HTTP-429 von mempool.space bewusst komplett an
-(Exit-Code `EXIT_RATE_LIMITED` = 75, siehe `btc_parser_app/api/poller.py`)
-statt automatisch weiterzuversuchen – das erfordert manuelles Eingreifen
-(Prozess neu starten, ggf. Poll-Intervalle anpassen). Der eigene
-Exit-Code (statt des generischen 1, den auch ein unbehandelter Absturz
-liefern würde) existiert genau dafür: Die unter [`systemd/`](../systemd/)
-bereitgestellte `btc-parser-api-poll.service`-Unit (installierbar über
-`sudo systemd/install.sh`, siehe Kapitel 2.5) kombiniert
-`Restart=on-failure` mit `RestartPreventExitStatus=75` – ein echter
-Absturz wird neu gestartet, ein 429-Stopp explizit **nicht**, sodass ein
-reines "sofort wieder anfragen" die eigentliche Ursache (zu aggressive
-Rate) nicht verschlimmert. Der wöchentliche Reboot dieses Hosts bringt
-den Dienst trotzdem zuverlässig zurück, da das ein normaler
-Boot-Start der aktivierten Unit ist, kein `Restart=on-failure`-Trigger.
-
 ### Kein automatisches Storage-Cleanup
 
-Siehe Kapitel 7.4 – bewusste Design-Entscheidung, kein offener Punkt.
+Siehe Kapitel 6.4 – bewusste Design-Entscheidung, kein offener Punkt.
 Welcher rotierte CSV-Part gelöscht werden darf, entscheidet ausschließlich
 die Splunk-Input-Konfiguration oder ein eigenes, verifiziertes
 Cleanup-Skript, nie die Anwendung selbst.
-
-### Der historische Kraken-Import ist kein Teil dieser App mehr
-
-Es gibt keinen automatisierten Download der Kraken-Exports und kein
-eigenes Import-Tool dafür mehr – dieser Teil der Historie wird extern
-(von Hand) direkt in `prices.csv` eingespielt, bevor `api-poll` oder
-`backfill_price_gap.py` laufen.
-
-### Keine automatische Lückenfüllung in `prices.csv` nach Downtime
-
-Es gibt **keinen** Hintergrund-Mechanismus, der eine durch Absturz/
-Neustart/Wartungsfenster entstandene Lücke in `prices.csv` automatisch
-nachfüllt – der live `prices`-Endpunkt schreibt einfach ab dem nächsten
-erfolgreichen Poll weiter, die dazwischenliegenden Minuten bleiben ohne
-manuelles Eingreifen leer. Eine entstandene Lücke lässt sich nachträglich
-manuell über `backfill_price_gap.py` schließen (siehe Kapitel 6.6),
-solange mempool.space für den betroffenen Zeitraum noch Preisdaten über
-`historical-price` liefert – die Granularität dieser Daten nimmt mit dem
-Alter ab, sodass eine sehr alte Lücke ggf. nicht minutengenau
-geschlossen werden kann.
 
 ### `rpc.max_reorg_depth` als Sicherheitsgrenze
 
@@ -121,14 +80,6 @@ gemeinsamen Vorfahren bei einem Reorg. Ein echter Reorg sollte dies nie
 annähernd erreichen; wird die Grenze doch erreicht (Bug oder korrupter
 `index/`), bricht `rpc-ingest` ab und erfordert manuelles Eingreifen
 statt eines möglicherweise falschen automatischen Entscheids.
-
-### Kein mempool.space-seitiges Pool-Historie-Backfill
-
-Die Anwendung führt bewusst kein Backfill der eigenen
-Mining-Pool-Zuordnung über mempool.spaces `/api/v1/blocks*`-Endpunkte
-durch – das würde redundant dieselbe Zuordnung erneut ableiten, die
-`rpc/mining_pools.py` bereits lokal und offline produziert, und nur
-unnötig Rate-Limit-Budget verbrauchen (siehe Kapitel 4.7).
 
 ### Stale-Blocks-Pipeline liefert nur Header, keine vollständigen Blöcke
 
@@ -141,7 +92,7 @@ Teil des Datensets als vollständigen Block erreichbar machen.
 Eine Transaktion, die nie im Mempool dieses Nodes war (direkt/privat an
 einen Miner übermittelt), taucht erst im Block auf – das deckt die
 Splunk-Seite über die On-Chain-Daten von `rpc-ingest` ab, nicht
-`mempool-watch` (Kapitel 11.9). Ebenso werden nur exakte Adresstreffer
+`mempool-watch` (Kapitel 10.9). Ebenso werden nur exakte Adresstreffer
 erkannt, keine Wechselgeld-/Cluster-Adressen derselben Akteure.
 
 ### `start.sh`/`stop.sh` starten keinen abgestürzten Prozess neu
@@ -149,25 +100,22 @@ erkannt, keine Wechselgeld-/Cluster-Adressen derselben Akteure.
 Für harte Dauerbetriebs-Anforderungen sind systemd-Units mit
 `Restart=always`/`Restart=on-failure` vorzuziehen (siehe Kapitel 2.5).
 
-## 9.4 Betriebs-Checkliste für einen neuen Node
+## 8.4 Betriebs-Checkliste für einen neuen Node
 
 1. `bitcoin-cli` einrichten und Erreichbarkeit prüfen (lokal oder über
    `rpc.extra_args` gegen einen entfernten Node).
-2. `full_app/config/config.yaml` (oder eine Kopie davon) auf die eigene
+2. `config/config.yaml` (oder eine Kopie davon) auf die eigene
    Umgebung anpassen (siehe Kapitel 3).
 3. Virtuelle Umgebung einrichten (Kapitel 2.2).
-4. Optional, aber empfohlen: historische BTC/USD+EUR-Preise extern
-   besorgen und in `prices.csv` einspielen, `api-poll` starten, und die
-   verbleibende Lücke mit `backfill_price_gap.py` schließen (Kapitel 6.6).
-5. `./start.sh` ausführen.
-6. Logs unter `parser-data/logs/` (strukturiert `.log`, roh `.out`)
+4. `./start.sh` ausführen.
+5. Logs unter `parser-data/logs/` (strukturiert `.log`, roh `.out`)
    beobachten, insbesondere während der initialen
    Genesis-Aufholjagd von `rpc-ingest` (kann je nach Node-Performance
    mehrere Stunden bis Tage dauern).
-7. Für `mempool-watch`: `zmqpubsequence=…` in die `bitcoin.conf` des
+6. Für `mempool-watch`: `zmqpubsequence=…` in die `bitcoin.conf` des
    Nodes eintragen, Node neu starten, `getzmqnotifications` prüfen und
-   `mempool_watch.zmq_endpoint` setzen (Kapitel 11.2).
-8. Splunk-Inputs gemäß Kapitel 7.4 einrichten, sobald die ersten
+   `mempool_watch.zmq_endpoint` setzen (Kapitel 10.2).
+7. Splunk-Inputs gemäß Kapitel 6.4 einrichten, sobald die ersten
    abgeschlossenen Parts unter `parser-data/export/` vorliegen.
-9. Für einen gehärteten Dauerbetrieb: systemd-Units gemäß Kapitel 2.5
+8. Für einen gehärteten Dauerbetrieb: systemd-Units gemäß Kapitel 2.5
    einrichten statt dauerhaft auf `start.sh`/`stop.sh` zu setzen.

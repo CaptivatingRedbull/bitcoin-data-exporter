@@ -1,5 +1,5 @@
-"""btc_parser_app - Bitcoin RPC block parser, stale-tip pipeline + mempool.space price poller.
+"""btc_parser_app - Bitcoin RPC block parser, stale-tip pipeline + sanctioned-address mempool watcher.
 
-See full_app/README.md for an overview and full_app/config/config.yaml for
-every runtime setting.
+See README.md for an overview and config/config.yaml for every runtime
+setting.
 """

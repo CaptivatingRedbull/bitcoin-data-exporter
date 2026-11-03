@@ -15,7 +15,7 @@ Kommando: `rpc-ingest` · Einstiegspunkt: `btc_parser_app/rpc/ingest.py::run_rpc
 | `rpc/mining_pools.py` | Mining-Pool-Zuordnung (Tag- und Adressabgleich). |
 | `rpc/reorg_state.py` | Zustandsdateien: `index/`, `current.csv`, `latest.csv`, `block_status.csv`, `reorg/`. |
 | `rpc/part_writer.py` | Verwaltet die Part-Nummerierung sowie die Übergabe von `state_dir` nach `output_dir` für `blocks/`/`transactions/`/`inputs/`/`outputs/` – siehe 4.5. |
-| `api/mining_pools_dataset.py` | Lädt/aktualisiert das Signaturdatenset (`config/pools-v2.json`), das `mining_pools.py` verwendet. |
+| `rpc/mining_pools_dataset.py` | Lädt/aktualisiert das Signaturdatenset (`config/pools-v2.json`), das `mining_pools.py` verwendet. |
 
 ## 4.2 Es gibt genau eine Implementierung – kein separater Backfill-Modus
 
@@ -102,8 +102,7 @@ der gespeicherte Chain-Zustand wieder mit der aktiven Chain übereinstimmt
 2. Bricht die Suche `rpc.max_reorg_depth` (Standard 100) Blöcke lang ohne
    Fund ab, oder trifft sie auf einen nie indizierten Block, wirft
    `rpc-ingest` eine Exception und stoppt – das erfordert absichtlich
-   manuelles Eingreifen, statt zu raten (dieselbe Philosophie wie das
-   Anhalten von `api-poll` bei einem 429, siehe Kapitel 9).
+   manuelles Eingreifen, statt zu raten (siehe Kapitel 8).
 3. Ist der gemeinsame Vorfahre gefunden: jeder detached-Block wird in
    `block_status.csv` als `canonical=false` markiert, ein Audit-CSV nach
    `reorg/` geschrieben (Detached- **und** Attached-Bereich, siehe 4.5),
@@ -129,7 +128,7 @@ verzeichnisse (siehe Kapitel 3):
 
 | Datei/Verzeichnis | Charakter | Spalten | Zweck |
 |---|---|---|---|
-| `index/index.csv` | unveränderlich, Append-only | `height, blockhash, previousblockhash` | Protokoll jedes jemals exportierten Blocks. Beantwortet "wurde dieser exakte Blockhash jemals exportiert" – eine Höhe kann mehrere Zeilen haben, wenn sie jemals von einem Reorg betroffen war. Rotiert wie jede andere Append-only-CSV (Kapitel 7). |
+| `index/index.csv` | unveränderlich, Append-only | `height, blockhash, previousblockhash` | Protokoll jedes jemals exportierten Blocks. Beantwortet "wurde dieser exakte Blockhash jemals exportiert" – eine Höhe kann mehrere Zeilen haben, wenn sie jemals von einem Reorg betroffen war. Rotiert wie jede andere Append-only-CSV (Kapitel 6). |
 | `current.csv` | veränderlich, 1 Zeile | `height, blockhash` | Zeiger auf den zuletzt erfolgreich verarbeiteten kanonischen Block. Atomar geschrieben (Temp-Datei + `os.replace`). |
 | `latest.csv` | veränderlich, 1 Zeile | `height, blockhash` | Zeiger auf `tip - reorg_confirmations`. Atomar geschrieben. |
 | `block_status.csv` | veränderlich | `height, blockhash, canonical` | Nur Blöcke, die jemals von einem Reorg abgehängt wurden, bekommen hier eine Zeile; alles nie Reorgte hat keine Zeile und gilt implizit als kanonisch. Atomar geschrieben. |
@@ -138,7 +137,7 @@ verzeichnisse (siehe Kapitel 3):
 | `blocks/`, `transactions/`, `inputs/`, `outputs/` (solange Backlog aufzuholen ist) | wachsender Part | – | Der aktuell noch offene, nicht abgeschlossene Part im Batch-Modus (siehe 4.3/4.6) – erst nach Rotation/Wechsel in den atomaren Modus wandert er vollständig nach `output_dir`. |
 
 `index/index.csv` verwendet dieselbe Rotation wie jede andere
-Append-only-CSV (Kapitel 7); `IndexStore` liest beim Start automatisch
+Append-only-CSV (Kapitel 6); `IndexStore` liest beim Start automatisch
 alle Parts.
 
 **Zwei-Phasen-Commit-Prinzip:** `IndexStore.add()` staged eine Zeile nur
@@ -159,7 +158,7 @@ stattdessen eine harmlose erneute Prüfung beim nächsten Start.
 `blocks/blocks*.csv`, `transactions/transactions*.csv`,
 `inputs/inputs*.csv` und `outputs/outputs*.csv` sind ein Sonderfall
 gegenüber jeder anderen CSV dieser Anwendung, weil sie zusätzlich zur
-normalen Größenrotation (Kapitel 7) zwischen zwei Schreibmodi wechseln und
+normalen Größenrotation (Kapitel 6) zwischen zwei Schreibmodi wechseln und
 über zwei Verzeichnisse verteilt sind. Das übernimmt `PartSequencer` in
 `rpc/part_writer.py` – eine Instanz pro logischer CSV, alle vier
 gleichzeitig gedraint (siehe `ingest.py::_drain()`), damit ein Block seine
@@ -186,7 +185,7 @@ In beiden Modi gilt: **Ein Part erscheint unter `output_dir` immer erst,
 wenn er vollständig fertig ist – nie während er noch beschrieben wird.**
 Das ist genau das, was einen Splunk-`batch`-(Sinkhole-)Input, der
 `output_dir` konsumiert-und-löscht, dauerhaft sicher macht (siehe
-Kapitel 7) – unabhängig davon, ob gerade eine Genesis-Aufholjagd läuft
+Kapitel 6) – unabhängig davon, ob gerade eine Genesis-Aufholjagd läuft
 oder der Prozess längst dem Tip folgt.
 
 Die Part-Nummerierung ist **ein gemeinsamer, dauerhaft persistierter
@@ -207,7 +206,7 @@ möglicherweise dort schon gelöschte) Datei anzuhängen.
 
 ## 4.7 RPC-Aufrufe (`rpc/client.py`)
 
-Zwei Transportwege, gewählt über `rpc.transport` (Kapitel 3.5):
+Zwei Transportwege, gewählt über `rpc.transport` (Kapitel 3.3):
 
 - **`cli`** (Standard): ein Subprozess-Wrapper um `bitcoin-cli`, damit
   transparent dieselbe Auth-Methode greift, die der Betreiber auch
@@ -248,11 +247,7 @@ Verwendete RPC-Aufrufe:
 ## 4.8 Mining-Pool-Zuordnung (`rpc/mining_pools.py`)
 
 Ordnet jedem per RPC geholten Block seinen Mining-Pool zu – **ganz ohne
-zusätzliche RPC-Aufrufe oder Netzwerkanfragen**. Die Anwendung führt
-bewusst **kein** Backfill des eigenen Pool-Verlaufs von mempool.space über
-dessen `/api/v1/blocks*`-Endpunkte durch, da das redundant dieselbe
-Zuordnung erneut ableiten würde, die dieses Modul bereits lokal
-produziert – das würde nur unnötig Rate-Limit-Budget verbrauchen.
+zusätzliche RPC-Aufrufe oder Netzwerkanfragen**.
 
 Bitcoin Cores `getblock`-Antwort enthält kein Pool-Identitätsfeld; Pools
 identifizieren sich freiwillig in der Coinbase-Transaktion auf eine von
@@ -281,7 +276,7 @@ Diese vier Felder landen direkt auf der Block-Zeile
 
 **Wichtig:** Der rohe Coinbase-`scriptSig`-Hex-String und die
 Auszahlungsadressen, die der Matcher liest, werden von
-`aggregate_transaction()` nur noch als interner Rückgabewert
+`aggregate_transaction()` nur als interner Rückgabewert
 (Seitenkanal) an `aggregate_block()` weitergereicht – sie erscheinen
 selbst **nicht** in `transactions.csv` (siehe 4.10). Sobald `pool_id`/
 `pool_name`/`pool_link` auf der Blockzeile stehen, gibt es für die rohen
@@ -300,7 +295,7 @@ statt den Import abzubrechen.
 ### Aktualisierung des Signaturdatensets
 
 `rpc-ingest` ruft zu Beginn jedes Durchlaufs
-`refresh_if_stale(config.mining_pools_dataset)` auf (`api/mining_pools_dataset.py`)
+`refresh_if_stale(config.mining_pools_dataset)` auf (`rpc/mining_pools_dataset.py`)
 – ein billiger No-op, solange die lokale Datei jünger als
 `refresh_interval_seconds` (Standard eine Woche) ist. Löst dies einen
 tatsächlichen Refresh aus, wird der `PoolMatcher` neu geladen, damit ein
@@ -313,7 +308,7 @@ Manuell erzwingen: `python run.py update-pools-dataset`.
 
 > **Spaltenreihenfolge ist Vertrag (4.9–4.12):** Die Splunk-/Cribl-
 > Feldkonfiguration adressiert die Spalten von `transactions.csv`/
-> `inputs.csv`/`outputs.csv` nach Position (Kapitel 10.6). Wer eine Spalte
+> `inputs.csv`/`outputs.csv` nach Position (Kapitel 9.6). Wer eine Spalte
 > in `block_parser.py` hinzufügt, entfernt oder verschiebt, muss
 > `btc_parser_app/export_schema.py` mitziehen und
 > `python splunk/build_field_config.py` ausführen.
@@ -490,9 +485,10 @@ dauern höchstens einen `getblock`-Aufruf).
 ## 4.14 Parallele Aufholjagd (`rpc/catchup.py`) und Benchmark
 
 Sequenziell kostet jeder Block: `getblockhash` und `getblock <hash> 3`
-(je ein `bitcoin-cli`-Prozess), `json.loads(parse_float=Decimal)`,
-`aggregate_block()`, dann das Schreiben über polars – alles auf einem
-Kern, während Node und Platte größtenteils warten.
+(je ein `bitcoin-cli`-Prozess bzw. HTTP-Aufruf),
+`json.loads(parse_float=Decimal)`, `aggregate_block()`, dann das
+Schreiben über polars – alles auf einem Kern, während Node und Platte
+größtenteils warten.
 
 Mit `rpc.catchup_workers = N > 1` erledigen N Worker-Prozesse (gestartet
 per `spawn`, nicht `fork` – polars' Thread-Pool im Hauptprozess verträgt
@@ -507,43 +503,42 @@ Damit entstehen dieselben Batches und damit byte-identische CSVs.
 
 Die Worker bauen außerdem schon die polars-DataFrames für
 `transactions`/`inputs`/`outputs` eines Blocks
-(`catchup.frame_from_rows()`, exakt wie bisher mit
-`infer_schema_length=None`); der Hauptprozess hängt die Frames eines
-Batches nur noch per `pl.concat(..., how="vertical_relaxed")` aneinander
-und schreibt sie. `vertical_relaxed` hebt jede Spalte auf den Supertyp
-über den ganzen Batch (Null + Int64 → Int64, Int64 + Float64 → Float64) –
-denselben, den die zeilenweise Inferenz über alle Zeilen des Batches
-gewählt hätte –, deshalb sind die geschriebenen Bytes identisch
+(`catchup.frame_from_rows()`, mit `infer_schema_length=None` wie im
+sequenziellen Fall); der Hauptprozess hängt die Frames eines Batches nur
+noch per `pl.concat(..., how="vertical_relaxed")` aneinander und schreibt
+sie. `vertical_relaxed` hebt jede Spalte auf den Supertyp über den ganzen
+Batch (Null + Int64 → Int64, Int64 + Float64 → Float64) – denselben, den
+die zeilenweise Inferenz über alle Zeilen des Batches gewählt hätte –,
+deshalb sind die geschriebenen Bytes identisch
 (`tests/test_catchup.py::FrameEquivalenceTest`, 300 Zufalls-Batches je
-Event-Typ, plus der Ende-zu-Ende-Vergleich unten). Das Bauen der
-DataFrames aus Tausenden Zeilen-Dicts war der teuerste Schritt, der im
-seriellen Hauptprozess übrig war (siehe „Produktion“ unten).
+Event-Typ). Das Bauen der DataFrames aus Tausenden Zeilen-Dicts ist nach
+dem Parsen der teuerste Schritt pro Block; in den Workern skaliert er mit
+N, statt den einen Schreibprozess zu begrenzen.
 
 Abgrenzungen:
 
 - **Nur tief unter dem Tip**: Höhen `≤ tip − max_reorg_depth`. Alles
   darüber (das letzte Stück einer Aufholjagd sowie Tip-Following und
-  atomarer Modus) läuft unverändert sequenziell. Ein Pool wird nur
-  gestartet, wenn der parallele Bereich größer als das Vorab-Fenster
-  (`4 × N`) ist.
+  atomarer Modus) läuft sequenziell. Ein Pool wird nur gestartet, wenn der
+  parallele Bereich größer als das Vorab-Fenster (`4 × N`) ist.
 - **Kettenprüfung**: Passt `previousblockhash` eines vorab geholten Blocks
   nicht zum zuletzt übernommenen Hash, wird nichts davon exportiert; der
   Durchlauf endet mit Checkpoint, und der nächste Durchlauf führt die
   normale Reorg-Erkennung (4.4) aus.
 - **Fehler**: Ein `RpcCliError` eines Workers wird erst an seiner Höhe im
   Hauptprozess ausgelöst – nachdem alle niedrigeren Höhen übernommen
-  wurden, genau wie sequenziell. `run_rpc_ingest()` behandelt ihn wie
-  bisher (`index.discard_pending()`, warten, neuer Durchlauf).
+  wurden, genau wie sequenziell. `run_rpc_ingest()` behandelt ihn wie im
+  sequenziellen Fall (`index.discard_pending()`, warten, neuer Durchlauf).
 - **Bereits indizierte Blöcke** holt ein Worker trotzdem; der Hauptprozess
   verwirft sie (kommt in der Aufholjagd nur für die wenigen Blöcke
   zwischen letztem Index-Flush und einem Absturz vor).
 
 Bewusst **nicht** umgesetzt: `orjson` statt `json` – es kann Zahlen nicht
-als `Decimal` liefern, und das Parsen macht nach dem Wechsel auf HTTP nur
-noch ~8 ms von ~60 ms pro Block aus (siehe Profil unten); den
-Präzisionsbeweis für einen Float-Umweg wäre das nicht wert. Ebenso kein
-gebündeltes `getblockhash`: über HTTP kostet es < 1 ms und wird von den
-Workern ohnehin parallel geholt.
+als `Decimal` liefern, und das Parsen macht über HTTP nur ~8 ms von
+~60 ms pro Block aus (siehe Profil unten); den Präzisionsbeweis für einen
+Float-Umweg wäre das nicht wert. Ebenso kein gebündeltes `getblockhash`:
+über HTTP kostet es < 1 ms und wird von den Workern ohnehin parallel
+geholt.
 
 ### Benchmark
 
@@ -552,18 +547,15 @@ Workern ohnehin parallel geholt.
 Chain hat 796 Blöcke: Höhe 0–545 nahezu leer, Höhe 546–796 je ~500
 Transaktionen / ~1.000 Inputs / ~2.000 Outputs / ~250 kB, gemischte
 Skripttypen (P2PKH, P2SH-P2WPKH, P2WPKH, P2TR, OP_RETURN) – vergleichbar
-mit Mainnet um Höhe 300k, wo in Produktion sequenziell ~11 Blöcke/s
-gemessen wurden. Jeder Lauf startet `run.py rpc-ingest` mit leerem
-`state_dir`/`output_dir`, holt bis `tip − reorg_confirmations` auf und
-wird dann per SIGTERM beendet; gemessen werden die Höhen 579–699
+mit Mainnet um Höhe 300k. Jeder Lauf startet `run.py rpc-ingest` mit
+leerem `state_dir`/`output_dir`, holt bis `tip − reorg_confirmations` auf
+und wird dann per SIGTERM beendet; gemessen werden die Höhen 579–699
 (große Blöcke, alle im parallelen Bereich `≤ tip − max_reorg_depth`),
 über Zeitstempel der `current.csv`-Checkpoints. `batch_size` 20,
-`reorg_confirmations` 6, `max_reorg_depth` 100. Der alte Code wurde per
-`git archive` des Stands vor dieser Änderung ausgeführt.
+`reorg_confirmations` 6, `max_reorg_depth` 100.
 
 | `transport` | `catchup_workers` | Blöcke/s | Faktor |
 |---|---|---|---|
-| alter Code (`cli`) | – | 8,9 | 1,0× |
 | `cli` | 1 | 8,9 | 1,0× |
 | `http` | 1 | 17,2 | 1,9× |
 | `cli` | 8 | 49,6 | 5,6× |
@@ -574,22 +566,19 @@ wird dann per SIGTERM beendet; gemessen werden die Höhen 579–699
 | `http` | 10 | 73,9 | 8,3× |
 
 Bei 8 Workern ist die Maschine ausgelastet (Worker + bitcoind teilen sich
-die 12 Kerne); mehr Worker bringen nichts mehr. (Diese Tabelle stammt
-noch aus der Version, in der der Hauptprozess die DataFrames selbst
-gebaut hat – siehe „Produktion“.)
+die 12 Kerne); mehr Worker bringen dort nichts mehr.
 
 **Gleichheit der Ausgabe.** `diff -r` über `state_dir` + `output_dir`
 (Parts, `*_part_seq.csv`, `current.csv`, `latest.csv`, `index/`) zwischen
-dem alten Code und **jedem** Lauf der Tabelle: byte-identisch. Ebenso
-byte-identisch: ein mit altem Code bis Höhe 640 gelaufener und dann
-gestoppter `state_dir`, einmal mit altem Code und einmal mit `http` + 8
-Workern fortgesetzt; und ein mit `http` + 8 Workern per SIGTERM
-gestoppter Lauf (Stopp nach 0,5 s, Exit-Code 0, keine verwaisten
-Worker – auch bei SIGTERM an die ganze Prozessgruppe wie unter systemd),
-fortgesetzt mit altem bzw. neuem Code. Die Unit-Tests
-(`tests/test_catchup.py`) prüfen dasselbe gegen eine synthetische Chain,
-inklusive atomarem Modus, Stopp mitten im parallelen Bereich, Worker-
-Fehler und Ketten-Bruch.
+allen Läufen der Tabelle: byte-identisch. Ebenso byte-identisch: ein
+sequenziell bis Höhe 640 gelaufener und dann gestoppter `state_dir`,
+einmal sequenziell und einmal mit `http` + 8 Workern fortgesetzt; und ein
+mit `http` + 8 Workern per SIGTERM gestoppter Lauf (Stopp nach 0,5 s,
+Exit-Code 0, keine verwaisten Worker – auch bei SIGTERM an die ganze
+Prozessgruppe wie unter systemd), sequenziell bzw. parallel fortgesetzt.
+Die Unit-Tests (`tests/test_catchup.py`) prüfen dasselbe gegen eine
+synthetische Chain, inklusive atomarem Modus, Stopp mitten im parallelen
+Bereich, Worker-Fehler und Ketten-Bruch.
 
 **Profil pro Block** (gleiche Blöcke, Mittel über 40 Blöcke):
 
@@ -604,31 +593,17 @@ Fehler und Ketten-Bruch.
 | polars `DataFrame` + `write_csv` (alle vier Event-Typen) | 10,2 |
 | `pickle` dumps / loads des Ergebnisses (Worker → Hauptprozess) | 3,5 / 3,6 |
 
-### Produktion (Mainnet, Ryzen 9 5950X, Bitcoin Core v31.1, `rpcthreads=16`)
+**Aufteilung Hauptprozess / Worker** (synthetische Blöcke, Batch von 20,
+M2 Max):
 
-Erste Version (Hauptprozess baut die DataFrames), `http` + 8 Worker,
-5-Minuten-Mittel aus den „Progress“-Logzeilen:
-
-| | Höhe | Blöcke/s |
+| Block | Hauptprozess pro Block | pro Worker pro Block (DataFrame-Bau) |
 |---|---|---|
-| alter Code (sequenziell) | ~320k → 339k | 10 → 6,3 |
-| `http`, 8 Worker | ~350k → 389k | 40 → 23 |
+| 500 Tx / ~2.300 In+Out | 0,7 ms | 5,2 ms |
+| 2.000 Tx / ~9.000 In+Out | 1,8 ms | 20,4 ms |
 
-Etwa Faktor 6 bei vergleichbarer Höhe, aber mit den 2015 schnell
-wachsenden Blöcken stark fallend. `top` zeigte warum: Hauptprozess bei
-~105 % CPU (ein Kern voll), bitcoind bei ~190 %, Maschine zu 84 % idle –
-der serielle Schreiber war die Grenze, nicht Worker oder Node.
-
-Kosten im Hauptprozess pro Block vorher/nachher (synthetische Blöcke,
-Batch von 20, M2 Max; „pro Worker“ = was dafür in jeden Worker wandert):
-
-| Block | Hauptprozess vorher | nachher | zusätzlich pro Worker |
-|---|---|---|---|
-| 500 Tx / ~2.300 In+Out | 9,9 ms (≤ 101 Blöcke/s) | 0,7 ms | 5,2 ms |
-| 2.000 Tx / ~9.000 In+Out | 35,5 ms (≤ 28 Blöcke/s) | 1,8 ms | 20,4 ms |
-
-Die alte Obergrenze von ~28 Blöcken/s für 2.000-Tx-Blöcke passt zu den
-~23 Blöcken/s, die in Produktion bei Höhe 389k beobachtet wurden. Danach
-skaliert die Aufholjagd mit Workern und bitcoind-CPU: auf dem 5950X
-(16 Kerne/32 Threads) `catchup_workers: 14` als Startwert und anhand von
-`top` (Worker und bitcoind ausgelastet? Maschine noch idle?) nachjustieren.
+Der Schreibprozess ist damit auch bei großen Blöcken weit von der Grenze
+entfernt; die Aufholjagd skaliert mit Workern und bitcoind-CPU. In
+Produktion (Mainnet, Ryzen 9 5950X, 16 Kerne/32 Threads, Bitcoin Core
+v31.1, `rpcthreads=16`): `transport: "http"`, `catchup_workers: 14` als
+Startwert und anhand von `top` (Worker und bitcoind ausgelastet? Maschine
+noch idle?) nachjustieren.

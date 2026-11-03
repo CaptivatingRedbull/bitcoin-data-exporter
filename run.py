@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Convenience entrypoint - makes `python run.py <command>` work from
-anywhere without having to set PYTHONPATH or `cd` into full_app/ first.
+anywhere without having to set PYTHONPATH or `cd` into the repository first.
 
-Equivalent to `python -m btc_parser_app.cli` run from inside full_app/.
+Equivalent to `python -m btc_parser_app.cli` run from the repository root.
 """
 
 from pathlib import Path

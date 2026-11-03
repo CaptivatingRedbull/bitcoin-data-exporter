@@ -1,6 +1,6 @@
 """The BTC Mempool Explorer dashboard (splunk/dashboards/build_btc_mempool_explorer.py)
 must only use tstats on fields that are actually indexed (export_schema.py,
-docs chapter 10.6) - a tstats over a search-time field returns nothing,
+docs chapter 9.6) - a tstats over a search-time field returns nothing,
 silently. Also checks that the generated dashboard/app files are up to date.
 
     python -m unittest discover -s tests      (or: pytest tests)

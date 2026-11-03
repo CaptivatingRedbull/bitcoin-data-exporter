@@ -4,10 +4,10 @@
 > option, every output file/schema, ingestion guidance, source-file-by-
 > source-file walkthrough), see [`docs/`](docs/00-index.md).
 
-A Bitcoin block/mempool/price data pipeline with four independent
-long-running processes/services instead of one multithreaded main script -
-they don't share state or failure domains, so a 429 on the API side never
-touches block parsing, and a node hiccup never touches pricing:
+A Bitcoin block/mempool data pipeline with three independent long-running
+processes/services instead of one multithreaded main script - they don't
+share state or failure domains, so a failed GitHub download never touches
+block parsing, and a `mempool-watch` crash never touches `rpc-ingest`:
 
 - **RPC parser** (`rpc-ingest`) - pulls blocks from your own `bitcoin-cli`,
   flattens each block + its transactions into CSV rows, and attributes each
@@ -21,26 +21,26 @@ touches block parsing, and a node hiccup never touches pricing:
   tx entering this node's mempool (ZMQ `sequence` + periodic `getrawmempool`
   reconcile) against a sanctions list and exports one event per state change
   of each matching tx - never the mempool itself (see its own section below).
-- **API fetcher** (`api-poll`) - polls mempool.space's price endpoint on a
-  budget so it never trips a 429, writing a minutely BTC/USD+EUR price
-  snapshot (see **Pricing** below).
 
-Everything that's a tunable - endpoints, polling cadence, the rate-limit
-budget, RPC connection details, output paths - lives in
+BTC prices are not part of this app: `btc:prices` reaches the same Splunk
+index through its own forwarder input, and the dashboard uses it from
+there (see **Storage & Splunk ingestion** below).
+
+Everything that's a tunable - RPC connection details, polling cadence,
+output paths, the sanctions list - lives in
 [`config/config.yaml`](config/config.yaml). Nothing is hardcoded in code.
 
 ## Layout
 
 ```
-full_app/
-  start.sh                     production-style startup: checks bitcoind, launches all four services in the background
+<repository>/
+  start.sh                     production-style startup: checks bitcoind, launches all three services in the background
   stop.sh                      stops what start.sh started
   lib.sh                       shared helpers for start.sh/stop.sh
   run.py                       convenience CLI entrypoint
-  backfill_price_gap.py        standalone, manually-run historic price gap backfill - see Pricing below
   requirements.txt
   parser-data/                 all runtime data (created on first run) - logs/, state/{rpc,stale,mempool_watch}
-                                (internal bookkeeping, never Splunk-facing), export/{api,rpc,stale,mempool_watch}
+                                (internal bookkeeping, never Splunk-facing), export/{rpc,stale,mempool_watch}
                                 (Splunk-facing - see config.yaml reference below)
   config/
     config.yaml                all settings (see below)
@@ -51,31 +51,28 @@ full_app/
   splunk/                      Splunk add-ons (inputs, index-time parsing, search-time fields, index
                                definition, ingest tuning), build_field_config.py (generates the
                                field confs + Cribl pipeline from btc_parser_app/export_schema.py)
-                               and scripts/ (enable-backfill, fresh-start, bench) - see docs/10, docs/12;
-                               dashboards/ + btc-parser-dashboards/: BTC Mempool Explorer (docs/10.9)
+                               and scripts/ (enable-backfill, fresh-start, bench) - see docs/09, docs/11;
+                               dashboards/ + btc-parser-dashboards/: BTC Mempool Explorer (docs/09, 9.9)
   cribl/                       generated prod Cribl pipeline (UF -> Cribl -> Splunk) - see cribl/README.md
   docs/                        full German-language reference
+  tests/                       stdlib unittest suite
   btc_parser_app/
     config.py                  loads+validates config.yaml
     cli.py                     argparse entrypoint, wired to run.py
+    export_schema.py           column layout + indexed fields of every Splunk-facing CSV (feeds splunk/build_field_config.py)
     common/
       csv_writer.py            shared append-only, size-rotated CSV writer
       atomic_write.py          temp-file + rename whole-file replacement for state files
       block_header.py          raw 80-byte block header parsing + hash validation
       logging_setup.py         console + rotating-file logging
       stop_signal.py           SIGTERM/SIGINT -> stop event for the long-running loops
-    api/                       mempool.space side ("api-poll")
-      rate_limiter.py          token-bucket rate limiter
-      client.py                rate-limited HTTP GET client (retries, 429 handling)
-      mempool_endpoints.py     per-endpoint JSON -> row parsers
-      poller.py                threaded interval poller
-      mining_pools_dataset.py  refreshes config/pools-v2.json from GitHub
-      price_gap_backfill.py    standalone historic price gap backfill against mempool.space's historical-price endpoint
+      http_fetch.py            plain HTTP GET with retries, for the two GitHub downloads
     rpc/                       bitcoin-cli side ("rpc-ingest") - one implementation, no separate backfill script
       client.py                bitcoind RPC client: bitcoin-cli subprocess or direct JSON-RPC over HTTP
       catchup.py               process pool that fetches + parses blocks ahead of the writer while catching up
       block_parser.py          block/tx JSON -> flat CSV rows
       mining_pools.py          mining pool extractor (tag + address matching)
+      mining_pools_dataset.py  refreshes config/pools-v2.json from GitHub
       reorg_state.py           index/current.csv/latest.csv/block_status.csv/reorg/ state files
       part_writer.py           state_dir->output_dir handoff + atomic per-block writes for blocks/transactions
       ingest.py                genesis-to-tip catch-up + continuous reorg-aware tip-following
@@ -91,7 +88,7 @@ full_app/
 ## Setup
 
 ```sh
-cd full_app
+cd <repository>
 python3 -m venv .venv        # or reuse the repo's existing .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -101,7 +98,7 @@ configured `bitcoin.conf`/cookie file, or see `rpc.extra_args` below for a
 remote node).
 
 > **Note:** `rpc.output_dir`/`rpc.state_dir` (defaults `parser-data/export/rpc`
-> and `parser-data/state/rpc`) resolve relative to `full_app/`. `rpc-ingest`
+> and `parser-data/state/rpc`) resolve relative to the repository root. `rpc-ingest`
 > builds its own state from scratch the first time it's pointed at a pair of
 > directories - if they're empty, it starts fresh from genesis (height 0)
 > rather than assuming any pre-existing data in there is compatible with its
@@ -116,7 +113,7 @@ Tests (stdlib `unittest`, no extra dependency; `pytest tests` works too):
 ## Running it in production: `start.sh` / `stop.sh`
 
 ```sh
-./start.sh   # checks bitcoind is already reachable, then launches all four
+./start.sh   # checks bitcoind is already reachable, then launches all three
              # services in the background
 ./stop.sh    # stops them (SIGTERM, then SIGKILL after a 30s grace period)
 ```
@@ -128,28 +125,24 @@ Tests (stdlib `unittest`, no extra dependency; `pytest tests` works too):
    isn't reachable, it fails immediately with a clear message instead of
    guessing at node lifecycle; go start/fix the node yourself, then re-run
    this script.
-2. Launches `rpc-ingest`, `stale-blocks-ingest`, `api-poll`, and
-   `mempool-watch` detached
-   (`nohup`, nothing tied to your terminal), tracking each as a PID file
+2. Launches `rpc-ingest`, `stale-blocks-ingest` and `mempool-watch`
+   detached (`nohup`, nothing tied to your terminal), tracking each as a PID file
    under `.pids/`. Re-running `start.sh` is safe - anything already running
    is left alone.
 
-All four commands log to `<logging.log_dir>/<command>.log` (rotating,
+All three commands log to `<logging.log_dir>/<command>.log` (rotating,
 20MB x5; default `parser-data/logs/`), with their raw stdout/stderr next to
 it at `<command>.out`. Point at a different config file with
 `BTC_PARSER_CONFIG=/path/other.yaml ./start.sh`.
 
-`stop.sh` sends SIGTERM to all four PIDs - `rpc-ingest`/`stale-blocks-ingest`/
-`mempool-watch` finish their current batch/pass and checkpoint cleanly before exiting;
-`api-poll` (via a `SIGTERM` -> `KeyboardInterrupt` shim in `cli.py`) stops
-the same way it would on Ctrl-C. Neither script ever touches bitcoind, on
+`stop.sh` sends SIGTERM to all three PIDs - each finishes its current
+batch/pass and checkpoints cleanly before exiting. Neither script ever touches bitcoind, on
 startup or shutdown - it's entirely out of scope for both; stop it yourself
 with `bitcoin-cli stop` if you want it down too.
 
 For a hardened Linux deployment, use `sudo systemd/install.sh` instead: it
-installs one systemd unit per service (restart-on-crash, survives reboots,
-and never restart-loops `api-poll` into a 429). On an existing install,
-adding a new service (e.g. `mempool-watch`) is: `git pull`,
+installs one systemd unit per service (restart-on-crash, survives reboots).
+Updating an existing install is: `git pull`,
 `.venv/bin/pip install -r requirements.txt`, re-run `sudo systemd/install.sh`
 (it refuses to proceed if the venv is missing a required package). `start.sh`/`stop.sh` cover
 local/dev use and simple always-on hosts, but don't restart a crashed
@@ -166,8 +159,8 @@ instead of the default `config.yaml`:
 BTC_PARSER_CONFIG=config/config.production.yaml ./start.sh
 ```
 
-That config points `rpc.output_dir`/`mempool_api.output_dir`/
-`logging.log_dir` at a large dedicated data volume instead of relative
+That config points every `output_dir`/`state_dir` and `logging.log_dir`
+at a large dedicated data volume instead of relative
 paths, since the pod's own home directory (where this repo is cloned) is
 far too small for chain data. It also connects straight to the
 `bitcoin-core` pod's RPC port and authenticates via the RPC cookie file on
@@ -189,10 +182,6 @@ python run.py rpc-ingest
 # main-chain output. Runs forever until SIGTERM/SIGINT.
 python run.py stale-blocks-ingest
 
-# Long-running poller for mempool.space's price endpoint, appending a
-# minutely BTC/USD+EUR row to prices.csv. Runs until Ctrl-C/SIGTERM or a 429.
-python run.py api-poll
-
 # Watch the mempool for txs paying to/spending from a sanctioned address.
 # Runs forever until SIGTERM/SIGINT.
 python run.py mempool-watch
@@ -205,11 +194,6 @@ python run.py mempool-watch-check <txid> [--blockhash <hash>]
 python run.py update-pools-dataset
 ```
 
-`backfill_price_gap.py` is a separate, standalone script (not a `run.py`
-subcommand, no config.yaml involvement) for filling the gap between the
-end of a historic price import and the start of live `api-poll`/Cribl
-coverage - see **Pricing** below.
-
 Every command accepts a `--config path/to/other-config.yaml` option to run
 against a different config file (e.g. for a second node, or a test config).
 **`--config` must come before the subcommand** - it's a top-level argparse
@@ -220,40 +204,12 @@ deliberately not fixed to accept both orders).
 
 ## config.yaml reference
 
-### `mempool_api`
-
-The mempool.space HTTP poller. `rate_limit.requests_per_minute` /
-`rate_limit.bucket_size` define a single shared token bucket that every
-`endpoints` request draws from, so raising either value raises the
-effective rate for the whole poller against that host, not per-endpoint.
-The default (10 req/min, burst of 10) is only drawn on by the live
-`prices` poll (~1 req/min at its 60s interval) - `backfill_price_gap.py`
-(see **Pricing** below) is a separate standalone script with its own
-`--rate-limit-per-second`, not governed by this budget.
-
-`endpoints` is a list of `{name, path, parser, interval_seconds}`. Each
-`parser` name must match a `parse_<name>` function registered in
-`btc_parser_app/api/mempool_endpoints.py` - add a new mempool.space endpoint
-by writing that function and adding an entry here; no other code changes
-needed. Each endpoint writes to its own `<name>.csv` directly under
-`output_dir` (default `parser-data/export/api`) - there's no separate state
-dir for this component, since nothing in this app ever reads these files
-back except `prices.csv` (see **Pricing** below). Point a Splunk `monitor`
-(tailing, non-destructive) input here, not `batch`: unlike `rpc.output_dir`,
-these are single ever-growing/rotating files, not one-complete-file-per-write,
-so there's no point where a `batch` input could safely consume-and-delete
-one without risking a partial read of the still-growing part.
-
-Requests are sent without a custom `User-Agent` header (just the
-`requests` library default) - there's no mempool.space subscription tier in
-play here, so there's nothing to identify against.
-
 ### `mining_pools_dataset`
 
 Where the RPC-side mining pool extractor gets its signatures from - the
 *only* source of mining-pool attribution in this app; matching happens
-entirely offline against RPC block data, with no per-block API calls to
-mempool.space. `local_path` (default `config/pools-v2.json`) ships a
+entirely offline against RPC block data, with no per-block network calls.
+`local_path` (default `config/pools-v2.json`) ships a
 bundled snapshot from
 [mempool/mining-pools](https://github.com/mempool/mining-pools) (MIT
 licensed), so `rpc-ingest` works offline out of the box. Run
@@ -262,76 +218,6 @@ newer pool signatures - `refresh_interval_seconds` defaults to one week,
 matching the upstream project's own update cadence. A failed refresh logs a
 warning and keeps using the existing local copy rather than breaking
 ingestion.
-
-### Pricing
-
-BTC price history, minutely throughout, all in one file:
-`mempool_api.output_dir/prices.csv`. The live `prices` endpoint (see
-`mempool_api.endpoints` above) polls mempool.space every 60s and appends a
-`date_unix,usd,eur` row (`btc_parser_app/api/mempool_endpoints.py`'s
-`parse_prices`) - `date_unix` is the price's own timestamp, not when it was
-fetched. Historic data (before this app existed, or a gap left by
-downtime) is backfilled by two separate, unrelated paths that both write
-the exact same `date_unix,usd,eur` shape into the same file:
-
-- **A one-time Kraken CSV import**, done by hand/externally (this app no
-  longer ships an importer for it) for the bulk of the history.
-- **`backfill_price_gap.py`** (`btc_parser_app/api/price_gap_backfill.py`)
-  - a standalone, manually-run script (not a `run.py` subcommand, no
-  config.yaml involvement) for the *short* remaining gap between where
-  that Kraken import stops and where live `api-poll`/Cribl-forwarded
-  coverage picks up. It walks the self-hosted mempool node's
-  (`https://mempool.home.captivatingredbull.org`, override with
-  `--base-url`) `/api/v1/historical-price?currency=<c>&timestamp=<t>`
-  endpoint one minute at a time between two unix timestamps you provide:
-
-  ```sh
-  python backfill_price_gap.py \
-    --start-timestamp 1690000000 \
-    --end-timestamp 1690003600 \
-    --export-dir parser-data/export/api
-  ```
-
-  - `--start-timestamp` / `--end-timestamp` - typically the last `date_unix`
-    already covered by the Kraken import, and the `date_unix` of the first
-    minute captured by the live poller, respectively.
-  - `--export-dir` - where `prices.csv` (and this script's own resume
-    checkpoint) live; point it at the same directory as
-    `mempool_api.output_dir`.
-  - `--rate-limit-per-second` (default 1000) - enforced with fixed-interval
-    pacing between requests, not a token bucket - this is a short,
-    manually-babysat one-off, not a shared long-running service. Lower it
-    if the node can't keep up.
-  - Validation: 1 in `--validate-every` (default 1000) datapoints is also
-    fetched from the official `--validation-base-url`
-    (`https://mempool.space`, never faster than 1 req/s) and the USD/EUR
-    difference is logged. Above `--validation-warn-percent` (default 2) the
-    line is a WARNING tagged `PRICE_VALIDATION_WARNING` - `grep` the log
-    for it. Failed validation requests are tagged `PRICE_VALIDATION_FAILED`
-    and never stop the backfill. `--validate-every 0` disables it.
-  - A 429 from the data source is never retried: it's logged and the script
-    exits immediately, leaving its checkpoint exactly where it stopped.
-  - Safe to interrupt and re-run (manually, not as a service): progress is
-    checkpointed to `<export-dir>/price_gap_backfill_state.csv`, flushed
-    together with the rows in batches (every 1000 requests / 5s) and on
-    every exit including Ctrl-C, and rows already in `prices.csv` are never
-    duplicated. Re-run
-    the same `--start-timestamp` to resume; a different one starts fresh.
-  - The endpoint snaps a requested timestamp to whatever price point
-    mempool.space actually has nearest it (granularity varies with age),
-    so the row written is keyed by the response's own time, not the
-    requested one - consecutive requested minutes can resolve to the same
-    already-written row and are silently skipped rather than duplicated.
-
-Both backfill paths and the live poller share one dedupe rule (by
-`date_unix`), so they can run in any order, any number of times, without
-ever colliding or duplicating rows - which is exactly why `prices.csv`
-lives under `mempool_api.output_dir` (Splunk-facing, `export/api/`) with a
-`monitor` input rather than a `batch` one, same as every other endpoint
-there: `monitor` never deletes, so the file these backfills depend on for
-correctness and the file Splunk indexes from stay the same file - no
-separate copy to keep in sync, no risk of silently missing
-already-indexed-and-deleted minutes and re-importing them as duplicates.
 
 ### `rpc`
 
@@ -352,7 +238,7 @@ flag is visible to `ps` on a shared host - prefer cookie-file auth
 
 #### Faster catch-up: `transport` and `catchup_workers`
 
-Both default to the original behaviour (`transport: "cli"`,
+Both default to sequential `bitcoin-cli` (`transport: "cli"`,
 `catchup_workers: 1`) and can be switched on for a run that's already in
 progress - just restart `rpc-ingest`; existing `state_dir`/`output_dir`
 keep working, and the output (parts, `*_part_seq.csv`, `current.csv`,
@@ -375,7 +261,7 @@ keep working, and the output (parts, `*_part_seq.csv`, `current.csv`,
   processes (`rpc/catchup.py`) while the main process keeps consuming them
   strictly in height order - row buffers, `index/`, `block_status.csv`,
   parts and `current.csv` are still written by one process, in the same
-  order and at the same `batch_size` boundaries as before. The workers
+  order and at the same `batch_size` boundaries as a sequential run. The workers
   also build each block's transactions/inputs/outputs DataFrames, so the
   writer only concatenates (`how="vertical_relaxed"`, which yields the
   same per-batch column types and therefore the same bytes) and writes. Only used for
@@ -392,22 +278,20 @@ Benchmark (regtest chain of ~250 kB / ~500-tx blocks, comparable to mainnet
 around height 300k; Apple M2 Max, bitcoind v31.1 on the same host; full
 method and numbers in docs/04, section 4.14):
 
-| `transport` | `catchup_workers` | blocks/s | vs. before |
+| `transport` | `catchup_workers` | blocks/s | vs. `cli`/1 |
 |---|---|---|---|
-| `cli` (before this change) | 1 | 8.9 | 1.0x |
+| `cli` | 1 | 8.9 | 1.0x |
 | `http` | 1 | 17.2 | 1.9x |
 | `cli` | 8 | 49.6 | 5.6x |
 | `http` | 4 | 59.2 | 6.7x |
 | `http` | 8 | **79.3** | **8.9x** |
 | `http` | 10 | 73.9 | 8.3x |
 
-Every run's `state_dir` + `output_dir` was byte-identical to the old code's
-(`diff -r`), including a run that resumed an old-code state dir stopped
-mid-catch-up. These numbers predate moving DataFrame building into the
-workers. On mainnet that first version reached ~40 -> 23 blocks/s at
-heights 350k -> 389k (old code: ~6 at 339k) with the single writer process
-pegged at one core - which moving the DataFrames out removes (35 -> 2 ms
-of writer time per 2,000-tx block; see docs/04, 4.14). On the 5950X, use
+Every run's `state_dir` + `output_dir` was byte-identical (`diff -r`),
+including a state dir stopped mid-catch-up and resumed with different
+settings. Because the workers build the DataFrames, the single writer
+process spends ~2 ms per 2,000-tx block, so catch-up scales with workers
+and bitcoind CPU (see docs/04, 4.14). On the 5950X, use
 `transport: "http"`, `catchup_workers: 14`, bitcoind `rpcthreads=16`, and
 tune by `top`.
 
@@ -457,9 +341,8 @@ below.
 
 ### File rotation
 
-Every append-only CSV this app writes (`index/index.csv`,
-`peer_attempts.csv`, the stale-blocks exports, each mempool.space endpoint's
-`<name>.csv` including `prices.csv`, and `blocks.csv`/`transactions.csv`
+Every append-only CSV this app writes (`index/index.csv`, the stale-blocks
+exports, `sanctioned_tx_events.csv`, and `blocks.csv`/`transactions.csv`
 while there's backlog - see below) grows forever, so `common/csv_writer.py`
 caps each on-disk part at ~900MB and rolls over into a new numbered part
 before exceeding it: `<name>.csv` is the first part, then
@@ -467,7 +350,7 @@ before exceeding it: `<name>.csv` is the first part, then
 same directory. Nothing else about the layout changes - it's still one
 logical CSV, just split into files that never cross ~1GB. Anything in this
 app that needs to read a logical CSV back in full (the index,
-`peer_attempts.csv`, bootstrapping from `blocks/blocks.csv`) reads every
+bootstrapping from `blocks/blocks.csv`) reads every
 part in order automatically. If you point an external tool (Splunk, a
 monitoring stanza, ad-hoc scripts) at these files directly, make sure it
 globs `<name>*.csv` rather than the exact first filename - see **Storage &
@@ -506,27 +389,24 @@ once caught up; ignored while there's backlog to catch up on) all tune
 
 ### `logging`
 
-`level` (default `INFO`) and `log_dir` (default `logs`, relative to
-`full_app/`). Every command logs to both stdout and a rotating file at
+`level` (default `INFO`) and `log_dir` (default `parser-data/logs`,
+relative to the repository root). Every command logs to both stdout and a rotating file at
 `log_dir/<command-name>.log` (20MB per file, 5 kept). This is what
 `start.sh`'s background services rely on for visibility, since their
 detached stdout is just a raw `*.out` redirect.
 
-High-volume per-item lines (the API poller's "wrote N row(s)" line on every
-single fetch, `rpc-ingest`'s per-block "Parsing block N" line during a
-genesis catch-up) log at `DEBUG`, not `INFO` - set `logging.level: DEBUG`
-in config.yaml if you need that level of detail; the default `INFO` still
-gets startup summaries, warnings, batch-level progress lines, and anything
-that actually needs attention (a 429, a reorg, an RPC outage).
+High-volume per-item lines (`rpc-ingest`'s per-block "Parsing block N"
+line during a genesis catch-up) log at `DEBUG`, not `INFO` - set
+`logging.level: DEBUG` in config.yaml if you need that level of detail;
+the default `INFO` still gets startup summaries, warnings, batch-level
+progress lines, and anything that actually needs attention (a reorg, an
+RPC outage, a failed GitHub download).
 
 ## Mining pool extractor (RPC side)
 
 `btc_parser_app/rpc/mining_pools.py` is what "parses out" the mining pool
 for every block fetched via RPC, with zero extra RPC calls or network
-requests - this app deliberately does not backfill mempool.space's own
-per-block pool history via its `/api/v1/blocks*` endpoints, since redundantly
-re-deriving attribution this module already produces locally would burn a
-lot of the rate-limit budget for no benefit. Bitcoin Core's `getblock`
+requests. Bitcoin Core's `getblock`
 output has no pool-identity field; pools identify themselves voluntarily in
 the coinbase transaction in one of two ways, and `PoolMatcher.match()`
 checks both, in this priority order:
@@ -628,8 +508,7 @@ consumers never see a duplicate export for it - only `block_status.csv`'s
 `canonical` flag changes. If the walk-back can't find a common ancestor
 within `rpc.max_reorg_depth` blocks (default 100), or hits a block that was
 never indexed, `rpc-ingest` raises and stops rather than guessing - this is
-meant to require manual intervention, the same philosophy as `api-poll`
-halting on a 429.
+meant to require manual intervention.
 
 ### Starting state: genesis, or wherever you left off
 
@@ -697,7 +576,7 @@ down. Not covered by design: txs that never pass through this node's
 mempool (mined privately/directly) - alert on those from the confirmed
 `btc:inputs`/`btc:outputs` data in Splunk instead. Full details (schema,
 testing with `mempool-watch-check` or a private test list, Splunk alert
-example): [docs chapter 11](docs/11-mempool-watch-sanktionsadressen.md).
+example): [docs chapter 10](docs/10-mempool-watch-sanktionsadressen.md).
 
 ## Storage & Splunk ingestion
 
@@ -715,7 +594,7 @@ specifically so each `export/` subdirectory can be pointed at with a single,
 permanent Splunk input mode - no switching between backfill and
 steady-state, no excluding the newest file, no config discipline required:
 
-- **`export/rpc/{blocks,transactions}/` - `batch` (sinkhole,
+- **`export/rpc/{blocks,transactions,inputs,outputs}/` - `batch` (sinkhole,
   consume-and-delete).** A part only ever appears here once it's completely
   done - during backlog catch-up it's moved in whole from `state/rpc/` the
   instant it's rotated away from (never while still being appended to); once
@@ -723,31 +602,29 @@ steady-state, no excluding the newest file, no config discipline required:
   complete (see **File rotation** above). Either way, nothing growing is
   ever visible under `export/rpc/` - a `batch` input can consume and delete
   anything it finds there, at any time, with nothing excluded.
-- **`export/api/`, `export/stale/` and `export/mempool_watch/` - `monitor`
-  (tailing, non-destructive).** These aren't per-block atomic writes - each endpoint's
-  `<name>.csv` (including `prices.csv`) and the stale-tip exports are a
-  single file that's appended to and rotated by size like any other CSV in
-  this app (see **File rotation** above), so the *current* part is always
-  still growing. A `batch` input here would risk grabbing that file
-  mid-write. `monitor` never deletes, so clean up old rotated parts
-  yourself (by hand, or a cron job) once you've confirmed Splunk has indexed
-  them - and for `export/api/prices.csv` specifically, this isn't just the
-  safer default: `backfill_price_gap.py` reads that file's full history back
-  to dedupe (see **Pricing** above), so it must never be deleted out from
-  under this app in the first place.
+- **`export/stale/` and `export/mempool_watch/` - `monitor` (tailing,
+  non-destructive).** These aren't per-block atomic writes - the stale-tip
+  and sanctioned-event exports are a single file that's appended to and
+  rotated by size like any other CSV in this app (see **File rotation**
+  above), so the *current* part is always still growing. A `batch` input
+  here would risk grabbing that file mid-write. `monitor` never deletes,
+  so clean up old rotated parts yourself (by hand, or a cron job) once
+  you've confirmed Splunk has indexed them.
+
+`btc:prices` (BTC/USD/EUR minute prices, `date_unix,usd,eur`) is not
+written by this app and has no stanza in `TA-btc-parser-inputs`: it
+reaches the same `btc_parser` index through its own forwarder input.
+`export_schema.py` still describes it, so the generated Splunk/Cribl confs
+and the dashboard's tstats check know its (all indexed) columns, and the
+dashboard's price panels and USD conversions read it from the index.
+`splunk/scripts/btc-fresh-start.sh` wipes the whole index, prices
+included - re-ingest them through that input afterwards.
 
 None of this is wired up automatically on purpose: an app-side "delete
 this file, I'm sure Splunk has it" is one config mistake away from losing
 data with no way to re-derive it (re-parsing from genesis is expensive;
-re-fetching the API/pricing history may not even be possible). Configure
+mempool-watch events and stale-tip observations can't be regenerated at
+all). Configure
 retention explicitly in Splunk (or in your own cleanup cron, once you've
 verified indexing) rather than relying on this app to guess - and never
 point any Splunk input at a `state/` directory.
-
-## Reused from earlier scripts
-
-This app is a restructured, config-driven port of earlier standalone
-prototype scripts for the same two data sources (an RPC block/transaction
-flattener and a mempool.space endpoint poller), extended with mining-pool
-attribution, reorg handling, config-driven everything, and now the pricing
-pipeline described above.

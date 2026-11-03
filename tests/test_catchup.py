@@ -361,8 +361,8 @@ class ParallelCatchupTest(unittest.TestCase):
 
 class FrameEquivalenceTest(unittest.TestCase):
     """ingest._drain writes pl.concat(per-block frames, how="vertical_relaxed")
-    where the writer used to build one DataFrame from all of a batch's row
-    dicts. Same bytes, for every event type, for many random batches -
+    - the same bytes as one DataFrame built from all of a batch's row
+    dicts, for every event type, for many random batches -
     including batches where a column is all-null in some blocks (coinbase-
     only blocks, missing prevouts/fees) and populated in others."""
 

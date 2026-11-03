@@ -82,12 +82,11 @@ nachträglich mutiert oder erneut ausgegeben.
 
 ## 5.4 Warum nur Header, keine vollständigen Blöcke
 
-Diese Pipeline hat früher zusätzlich versucht, vollständige Block-/
-Transaktionsdaten zu beschaffen (über `getblockfrompeer` für Tips, die
-eigene Peers noch hatten, sowie über `submitheader`/`submitblock`, um die
-vollständigen Block-Blobs des GitHub-Datensets in den eigenen Node zu
-importieren). In der Praxis erzeugte das jedoch einen lückenhaften,
-inkonsistenten Datensatz: Bitcoin Cores Checkpoint-Mechanismus lehnt
+Vollständige Block-/Transaktionsdaten für stale Tips ließen sich nur über
+`getblockfrompeer` (für Tips, die eigene Peers noch haben) oder über
+`submitheader`/`submitblock` (um die Block-Blobs des GitHub-Datensets in
+den eigenen Node zu importieren) beschaffen. Das ergäbe einen
+lückenhaften, inkonsistenten Datensatz: Bitcoin Cores Checkpoint-Mechanismus lehnt
 grundsätzlich jeden konkurrierenden Header/Block auf oder unterhalb
 seines höchsten fest einprogrammierten Checkpoints ab – bestätigt im
 produktiven Betrieb deckt das die überwältigende Mehrheit dieses

@@ -11,7 +11,7 @@ Pflichtangabe oder jeder ungültige Wert führt zu einer klaren
 `ConfigError`-Meldung statt eines rohen Tracebacks tief im Programm.
 
 **Pfadauflösung:** Jeder relative Pfad in `config.yaml` wird gegen
-`APP_ROOT` aufgelöst – das ist `full_app/`, also das Verzeichnis, das
+`APP_ROOT` aufgelöst – das ist der Repository-Root, also das Verzeichnis, das
 `config/` und das `btc_parser_app`-Paket enthält, unabhängig vom
 Arbeitsverzeichnis, aus dem die Anwendung gestartet wird. Absolute Pfade
 funktionieren überall gleichermaßen.
@@ -24,69 +24,15 @@ funktionieren überall gleichermaßen.
 | `log_dir` | Pfad | `parser-data/logs` | Verzeichnis für rotierende Log-Dateien, ein `<kommando>.log` pro Kommando. |
 
 `log_dir` liegt standardmäßig unter demselben `parser-data/`-Wurzel-
-verzeichnis wie `state/` und `export/` (siehe 3.5/3.6) – rein zur
+verzeichnis wie `state/` und `export/` (siehe 3.3/3.4) – rein zur
 gemeinsamen, leicht auffindbaren Ablage; Logs sind selbst weder
 Splunk-Export noch App-Zustand. `start.sh` schreibt das rohe
 stdout/stderr jedes Prozesses zusätzlich nach `log_dir/<kommando>.out`
 (siehe Kapitel 2.3).
 
-Siehe Kapitel 9 für Details zum Logging-Verhalten.
+Siehe Kapitel 8 für Details zum Logging-Verhalten.
 
-## 3.2 `mempool_api`
-
-Der mempool.space-HTTP-Poller (`api-poll`).
-
-| Schlüssel | Typ | Default | Beschreibung |
-|---|---|---|---|
-| `base_url` | string | `https://mempool.space` | Basis-URL, an die jeder Endpunkt-Pfad angehängt wird. |
-| `output_dir` | Pfad | `parser-data/export/api` | Zielverzeichnis für eine `<name>.csv` pro Endpunkt, direkt unter `output_dir` (kein separater State-Ordner für diese Komponente). |
-| `request_timeout_seconds` | float | – (Pflicht) | HTTP-Request-Timeout. |
-| `max_connection_retries` | int (≥0) | – (Pflicht) | Anzahl Wiederholungen bei transienten Verbindungsfehlern (Reset, SSL-EOF etc.) – **nicht** für HTTP-429, das nie automatisch wiederholt wird. |
-| `retry_backoff_seconds` | float | – (Pflicht) | Wartezeit zwischen Wiederholungsversuchen. |
-| `rate_limit.requests_per_minute` | float (>0) | – (Pflicht) | Auffüllrate des gemeinsamen Token-Buckets. |
-| `rate_limit.bucket_size` | int (≥1) | – (Pflicht) | Burst-Kapazität des Token-Buckets. |
-| `endpoints` | Liste | – (Pflicht, nicht leer) | Siehe unten. |
-
-Jeder Eintrag in `endpoints` hat die Form:
-
-```yaml
-- name: prices               # bestimmt den Dateinamen <name>.csv
-  path: /api/v1/prices       # an base_url angehängt
-  parser: prices              # Name der parse_<name>-Funktion
-  interval_seconds: 60        # Poll-Intervall dieses Endpunkts
-```
-
-`rate_limit.requests_per_minute` / `rate_limit.bucket_size` definieren
-**einen einzigen gemeinsamen Token-Bucket**, aus dem sich jede
-`endpoints`-Anfrage bedient – eine Erhöhung dieser Werte erhöht also die
-effektive Rate gegenüber diesem Host insgesamt, nicht pro Endpunkt. Der
-Standardwert in `config.yaml` (10 Anfragen/Minute, Burst von 10) wird
-derzeit nur vom live `prices`-Poll oben gezogen (~1 Anfrage/Minute).
-`backfill_price_gap.py` (siehe 6.6) ist ein eigenständiges Skript mit
-eigenem `--rate-limit-per-second` und bedient sich **nicht** aus diesem
-Budget.
-
-`parser` muss auf eine `parse_<name>`-Funktion in
-`btc_parser_app/api/mempool_endpoints.py` verweisen – ein neuer
-mempool.space-Endpunkt wird durch Schreiben dieser Funktion und Ergänzen
-eines Eintrags hier hinzugefügt, ohne weitere Code-Änderungen (siehe
-Kapitel 6).
-
-Jede Endpunkt-CSV (inklusive `prices.csv`) ist eine einzelne,
-kontinuierlich wachsende/rotierende Datei – es gibt keinen Zeitpunkt, an
-dem eine dieser Dateien für einen `batch`-Splunk-Input "vollständig" wäre.
-`output_dir` sollte deshalb immer mit einem `monitor`-Input (nicht-
-destruktives Tailing) angebunden werden, nie mit `batch` (siehe Kapitel 7).
-Für `prices.csv` gilt das zusätzlich zwingend: `backfill_price_gap.py`
-liest diese Datei vollständig zurück, um bereits vorhandene Minuten zu
-erkennen (siehe Kapitel 6.6) – sie darf also nie durch ein destruktives
-Splunk-Input-Verhalten unter der Anwendung weggelöscht werden.
-
-Anfragen werden ohne eigenen `User-Agent`-Header gesendet (nur der
-Standard der `requests`-Bibliothek) – es gibt kein mempool.space-Abo in
-diesem Setup, gegen das man sich identifizieren müsste.
-
-## 3.3 `mining_pools_dataset`
+## 3.2 `mining_pools_dataset`
 
 Quelle der Signaturen für die RPC-seitige Mining-Pool-Zuordnung.
 
@@ -98,31 +44,13 @@ Quelle der Signaturen für die RPC-seitige Mining-Pool-Zuordnung.
 
 Dies ist die **einzige** Quelle für Mining-Pool-Zuordnung in dieser
 Anwendung; der Abgleich läuft vollständig offline gegen RPC-Blockdaten,
-ohne Aufrufe pro Block gegen mempool.space. Der mitgelieferte Snapshot
+ohne Netzwerkaufrufe pro Block. Der mitgelieferte Snapshot
 unter `config/pools-v2.json` stammt von
 [mempool/mining-pools](https://github.com/mempool/mining-pools)
 (MIT-lizenziert), sodass `rpc-ingest` offline funktioniert. Details zur
 Verwendung in Kapitel 4.
 
-## 3.4 Preis-Historie (kein config.yaml-Abschnitt)
-
-Es gibt in dieser Version **keinen** `pricing`-Abschnitt in `config.yaml`
-mehr. Historische Minutenpreise kommen aus zwei Quellen außerhalb der
-config.yaml-gesteuerten Kommandos:
-
-- ein einmaliger, extern durchgeführter Kraken-CSV-Import für den
-  Großteil der Historie (kein eigenes Tool mehr in dieser App), und
-- `backfill_price_gap.py` (eigenständiges Skript, eigene Kommandozeilen-
-  parameter: `--start-timestamp`, `--end-timestamp`, `--export-dir`,
-  `--rate-limit-per-second`, `--validate-every`, …) für die verbleibende Lücke bis zum ersten
-  live gepollten `prices`-Wert.
-
-Beide schreiben in dieselbe `date_unix,usd,eur`-Zeilenform in
-`mempool_api.output_dir/prices.csv` wie der Live-Poller – es gibt keine
-separate Tagestabelle und kein eigenes `output_dir` für Pricing. Details
-in Kapitel 6.6.
-
-## 3.5 `rpc`
+## 3.3 `rpc`
 
 Konfiguration für `rpc-ingest` (`bitcoin-cli`-Seite).
 
@@ -144,7 +72,7 @@ Konfiguration für `rpc-ingest` (`bitcoin-cli`-Seite).
 | `transport` | `"cli"` \| `"http"` | `"cli"` | Wie mit bitcoind gesprochen wird: `bitcoin-cli`-Subprozess pro Aufruf oder direktes JSON-RPC über HTTP. Retry/Timeout (die drei Zeilen darüber) gelten für beide. Siehe unten. |
 | `http_url` | string \| null | `null` | Nur bei `transport: "http"`: Endpunkt, z. B. `http://127.0.0.1:8332`. Leer = aus `extra_args` (`-rpcconnect`/`-rpcport`) abgeleitet, sonst `127.0.0.1` + Standardport der Chain. |
 | `cookie_file` | Pfad \| null | `null` | Nur bei `transport: "http"`: Cookie-Datei. Leer = aus `extra_args` (`-rpccookiefile`/`-datadir`) abgeleitet, sonst `~/.bitcoin/.cookie`. `rpcuser_env`/`rpcpassword_env` haben – wie bei `bitcoin-cli` – Vorrang. |
-| `catchup_workers` | int (≥1) | `1` | Worker-Prozesse, die während der Aufholjagd Blöcke vorab holen und parsen. `1` = streng sequenziell wie bisher. Siehe unten. |
+| `catchup_workers` | int (≥1) | `1` | Worker-Prozesse, die während der Aufholjagd Blöcke vorab holen und parsen. `1` = streng sequenziell. Siehe unten. |
 | `blocks_per_day` | int (≥1) | – (Pflicht) | Nominell 144 (10-Minuten-Blöcke); nur zur Näherung des Coin-Alters in Tagen. |
 | `max_block_weight` | int (≥1) | – (Pflicht) | Für `weight_utilization_pct`, standardmäßig 4.000.000. |
 | `halving_interval_blocks` | int (≥1) | – (Pflicht) | Für die Subsidy-Berechnung, standardmäßig 210.000. |
@@ -177,9 +105,8 @@ langen Aufholjagd feuern.
 
 ### Schnellere Aufholjagd: `transport` und `catchup_workers`
 
-Beide stehen standardmäßig auf dem bisherigen Verhalten (`transport: "cli"`,
-`catchup_workers: 1`) und dürfen auch bei einem bereits laufenden
-Durchlauf eingeschaltet werden – `rpc-ingest` neu starten genügt.
+Standard ist `transport: "cli"` und `catchup_workers: 1`. Beide dürfen
+auch bei einem bereits laufenden Durchlauf eingeschaltet werden – `rpc-ingest` neu starten genügt.
 Bestehende `state_dir`/`output_dir` funktionieren unverändert weiter, und
 die Ausgabe (Parts, `*_part_seq.csv`, `current.csv`, `index/`,
 `block_status.csv`) ist in beiden Fällen byte-identisch.
@@ -200,7 +127,7 @@ die Ausgabe (Parts, `*_part_seq.csv`, `current.csv`, `index/`,
   streng in Höhen-Reihenfolge übernimmt. Zeilenpuffer, `index/`,
   `block_status.csv`, Parts und `current.csv` schreibt weiterhin nur der
   Hauptprozess – in derselben Reihenfolge und an denselben
-  `batch_size`-Grenzen wie zuvor. Nur für Höhen, die mindestens
+  `batch_size`-Grenzen wie bei einem einzelnen Prozess. Nur für Höhen, die mindestens
   `max_reorg_depth` unter dem Tip liegen (so tiefe Blöcke behandelt die
   Reorg-Behebung ohnehin als endgültig); das letzte Stück vor dem Tip und
   das gesamte Tip-Following bleiben sequenziell. Baut ein vorab geholter
@@ -215,7 +142,7 @@ knapp unter der Zahl der physischen Kerne (bitcoind braucht für
 `getblock … 3` selbst CPU) – auf dem Ryzen 9 5950X 14 als Startwert.
 Messwerte: Kapitel 4.14.
 
-## 3.6 `stale_blocks`
+## 3.4 `stale_blocks`
 
 Konfiguration für `stale-blocks-ingest`.
 
@@ -234,16 +161,16 @@ die Splunk-seitigen Exporte, `state_dir` nur die interne Buchführung
 Splunk-Forwarder, der auf `output_dir` zeigt, nicht versehentlich auch
 diese interne Datei aufnimmt. Details in Kapitel 5.
 
-## 3.7 `mempool_watch`
+## 3.5 `mempool_watch`
 
-Konfiguration für `mempool-watch` (Kapitel 11). Alle `bitcoin-cli`-Aufrufe
+Konfiguration für `mempool-watch` (Kapitel 10). Alle `bitcoin-cli`-Aufrufe
 laufen über den `rpc`-Abschnitt oben (gleiche Verbindung/Authentifizierung
 wie `rpc-ingest`).
 
 | Schlüssel | Typ | Default | Beschreibung |
 |---|---|---|---|
 | `zmq_endpoint` | string | – (Pflicht, darf leer sein) | ZMQ-`sequence`-Publisher des Nodes, z. B. `tcp://127.0.0.1:28332` – muss zu `zmqpubsequence=` in dessen `bitcoin.conf` passen. Leer (`""`) = reiner Polling-Modus: dann ist der Abgleich (`reconcile_interval_seconds`) der einzige Erkennungsweg und sollte entsprechend kurz sein (z. B. 30). |
-| `sanctions_list_paths` | Liste von Pfaden (oder ein einzelner Pfad) | – (Pflicht, nicht leer) | Eine oder mehrere CSV-Dateien mit Kopfzeile `address,name,first_name,sanctions_programs` (nur `address` ist Pflicht). Werden zusammengeführt, bei doppelter Adresse gewinnt die erste Datei. Änderungen werden ohne Neustart übernommen (Kapitel 11.5). |
+| `sanctions_list_paths` | Liste von Pfaden (oder ein einzelner Pfad) | – (Pflicht, nicht leer) | Eine oder mehrere CSV-Dateien mit Kopfzeile `address,name,first_name,sanctions_programs` (nur `address` ist Pflicht). Werden zusammengeführt, bei doppelter Adresse gewinnt die erste Datei. Änderungen werden ohne Neustart übernommen (Kapitel 10.5). |
 | `output_dir` | Pfad | – (Pflicht) | Splunk-seitiger Export, standardmäßig `parser-data/export/mempool_watch`. |
 | `state_dir` | Pfad | – (Pflicht) | Nur interne Buchführung (`flagged.json`), standardmäßig `parser-data/state/mempool_watch`. |
 | `reconcile_interval_seconds` | float (>0) | `300` | Intervall des vollständigen `getrawmempool`-Abgleichs (zusätzlich immer beim Start und sofort nach einer erkannten ZMQ-Lücke). |
@@ -251,16 +178,16 @@ wie `rpc-ingest`).
 | `forget_after_confirmations` | int (≥1) | `6` | Ab dieser Tiefe des bestätigenden Blocks wird eine Transaktion nicht mehr auf Reorgs überwacht und aus `flagged.json` entfernt. |
 | `max_confirmation_scan_blocks` | int (≥1) | `50` | Verschwindet eine überwachte Transaktion aus dem Mempool, ohne dass ein ZMQ-Ereignis ankam (Downtime, verlorene Nachrichten), wird höchstens so viele Blöcke zurück nach ihr gesucht, bevor sie als `removed` gilt. |
 
-## 3.8 Dateirotation (gilt für die gesamte Anwendung)
+## 3.6 Dateirotation (gilt für die gesamte Anwendung)
 
 Nicht Teil von `config.yaml` (nicht konfigurierbar), aber relevant für
 jede Sektion oben: Jede Append-only-CSV dieser Anwendung wächst
 unbegrenzt, daher deckelt `btc_parser_app/common/csv_writer.py` jeden
 Dateipart auf ~900 MB (`MAX_PART_BYTES = 900_000_000`) und rollt vor
 Überschreiten in einen neuen nummerierten Part. Details und
-Ingestion-Implikationen in Kapitel 7.
+Ingestion-Implikationen in Kapitel 6.
 
-## 3.9 Beispiel: entfernter Node über SSH-Tunnel oder Netzwerk
+## 3.7 Beispiel: entfernter Node über SSH-Tunnel oder Netzwerk
 
 ```yaml
 rpc:

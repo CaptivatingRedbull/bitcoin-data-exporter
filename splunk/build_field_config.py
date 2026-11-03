@@ -20,7 +20,7 @@ Generated files (do not edit by hand - edit export_schema.py and re-run):
   indexed columns as event fields - every top-level field Cribl sends
   becomes an indexed field).
 
-See docs/10-splunk-integration-und-feldkonzept.md 10.6.
+See docs/09-splunk-integration-und-feldkonzept.md 9.6.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ INDEX_PROPS_HEADER = f"""{GENERATED_NOTE}
 # it on a Universal Forwarder: INDEXED_EXTRACTIONS would make the UF parse
 # the small sourcetypes and ship every column to Cribl as an indexed field.
 #
-# Field concept (docs/10-splunk-integration-und-feldkonzept.md 10.6):
+# Field concept (docs/09-splunk-integration-und-feldkonzept.md 9.6):
 # - btc:blocks, btc:stale_block_headers, btc:sanctioned_tx_events,
 #   btc:prices: INDEXED_EXTRACTIONS = csv, every column an indexed field.
 # - btc:transactions, btc:inputs, btc:outputs: no INDEXED_EXTRACTIONS.
@@ -339,7 +339,7 @@ def cribl_pipeline() -> str:
             "streamtags": [],
             "groups": {},
             "asyncFuncTimeout": 1000,
-            "description": "btc_parser_app export CSVs -> Splunk (docs chapter 10.6)",
+            "description": "btc_parser_app export CSVs -> Splunk (docs chapter 9.6)",
             "functions": functions,
         },
     }

@@ -9,7 +9,7 @@ checks these tuples against the rows the parsers actually emit, so a column
 added to block_parser.py without updating this file fails the tests instead
 of silently shifting every positional extraction by one.
 
-Indexing concept (docs/10-splunk-integration-und-feldkonzept.md 10.6):
+Indexing concept (docs/09-splunk-integration-und-feldkonzept.md 9.6):
 
 - Small sourcetypes (blocks, stale headers, sanctioned events, prices):
   every column indexed - cheap at their volume, and tstats over them stays
@@ -208,6 +208,10 @@ STALE_BLOCK_HEADER_COLUMNS: tuple[str, ...] = (
 
 SANCTIONED_TX_EVENT_COLUMNS: tuple[str, ...] = tuple(EVENT_COLUMNS)
 
+# btc:prices is not written by this app - minutely BTC/USD/EUR prices reach
+# the same index through their own forwarder input. Listed here so the
+# generated Splunk/Cribl confs and the dashboard tstats check know its
+# columns and indexed fields.
 PRICE_COLUMNS: tuple[str, ...] = ("date_unix", "usd", "eur")
 
 
@@ -292,7 +296,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         indexed=None,
         description=(
             "btc_parser_app mempool-watch - one row per sanctioned input/output per tx "
-            "state change (seen/confirmed/replaced/removed/unconfirmed, docs chapter 11)"
+            "state change (seen/confirmed/replaced/removed/unconfirmed, docs chapter 10)"
         ),
     ),
     Sourcetype(
@@ -302,8 +306,8 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         time_format="%s",
         indexed=None,
         description=(
-            "live-polled + Kraken-imported BTC/USD/EUR minute prices (docs chapter 6.4/6.6) - "
-            "date_unix is the price's own timestamp, not the poll time"
+            "BTC/USD/EUR minute prices, forwarded by their own input (not written by "
+            "btc_parser_app, docs chapter 9.4) - date_unix is the price's own timestamp"
         ),
     ),
 )

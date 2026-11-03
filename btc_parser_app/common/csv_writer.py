@@ -1,12 +1,12 @@
-"""Append-only CSV writing shared by the RPC parser and the API fetcher.
+"""Append-only CSV writing shared by every component of the app.
 
-Both sides write flat dict rows through the same two functions so on-disk
+Everything writes flat dict rows through the same two functions so on-disk
 behaviour (header-once, append thereafter, polars-inferred schema, size-based
 rotation) stays identical across the whole app.
 
 Every append-only CSV this app produces (blocks.csv, transactions.csv,
-index/index.csv, the stale-blocks exports, peer_attempts.csv, the
-mempool.space endpoint CSVs, ...) grows forever, so left alone any of them
+index/index.csv, the stale-blocks exports, sanctioned_tx_events.csv, ...)
+grows forever, so left alone any of them
 can eventually pass 1GB. write_rows_to_csv rotates a logical CSV into
 numbered parts instead: `<name>.csv` is the first part, then
 `<name>.000002.csv`, `<name>.000003.csv`, ... - each capped at roughly

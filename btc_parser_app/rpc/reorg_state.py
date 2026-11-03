@@ -102,8 +102,8 @@ class IndexStore:
     This is deliberate: the caller must only flush() after the corresponding
     blocks.csv/transactions.csv rows are durable (see ingest.py's batch
     checkpoints), so index.csv can never claim a block was exported before
-    it actually was. Committing eagerly (the old behaviour) meant a crash
-    between add() and the next batch flush left index.csv ahead of
+    it actually was. Committing eagerly would mean a crash between add()
+    and the next batch flush leaves index.csv ahead of
     blocks.csv/transactions.csv - on restart, contains() would skip
     re-exporting those heights, permanently losing them."""
 

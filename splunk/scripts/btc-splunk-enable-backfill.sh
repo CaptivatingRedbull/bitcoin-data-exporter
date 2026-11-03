@@ -8,7 +8,7 @@
 # misconfigured index (wrong timestamps, age/size-based freezing) loses
 # data that can only be rebuilt with a full re-parse. Hence: every check
 # below must pass before --enable edits anything (see
-# docs/12-splunk-backfill-indexierung.md for what each one means).
+# docs/11-splunk-backfill-indexierung.md for what each one means).
 #
 # Usage (as root):
 #   btc-splunk-enable-backfill.sh --check  [options]   read-only: inventory + preflight
@@ -184,7 +184,7 @@ for entry in "${STANZAS[@]}"; do
   SEEN_INDEX["$idx"]=1
 
   # props on the READING instance (standalone: Enterprise itself). Two
-  # valid shapes (docs chapter 10.6): INDEXED_EXTRACTIONS = csv (small
+  # valid shapes (docs chapter 9.6): INDEXED_EXTRACTIONS = csv (small
   # sourcetypes - parsed by whoever reads the file), or positional
   # TIME_PREFIX + the generated btc_* indexed-field transforms
   # (transactions/inputs/outputs). Behind Cribl (prod) neither applies -
@@ -276,14 +276,14 @@ else
 fi
 thp="$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 [[ "$thp" == *"[never]"* ]] && ok "transparent hugepages: never" \
-  || warn "transparent hugepages: $thp - Splunk recommends 'never' (see docs chapter 12)"
+  || warn "transparent hugepages: $thp - Splunk recommends 'never' (see docs chapter 11)"
 pid="$(head -1 "$INDEX_HOME/var/run/splunk/splunkd.pid" 2>/dev/null)"
 if [[ -n "$pid" && -r "/proc/$pid/limits" ]]; then
   nofile="$(awk '/Max open files/ {print $4}' "/proc/$pid/limits")"
   [[ "$nofile" == unlimited || "$nofile" -ge 64000 ]] && ok "splunkd open-files limit: $nofile" \
     || warn "splunkd open-files limit: $nofile (< 64000)"
 fi
-echo "  License: not checkable offline - make sure the license covers $(human "$TOTAL_BYTES") of ingest (see docs chapter 12)."
+echo "  License: not checkable offline - make sure the license covers $(human "$TOTAL_BYTES") of ingest (see docs chapter 11)."
 
 echo
 echo "Preflight: $FAILS FAIL, $WARNS WARN"

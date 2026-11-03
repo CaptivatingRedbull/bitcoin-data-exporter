@@ -10,7 +10,7 @@
 # a correct outputs.conf plus the TLS certs the Cloud receiver requires -
 # hand-writing one for Cloud is unsupported and will not authenticate.
 #
-# See docs/10-splunk-integration-und-feldkonzept.md, section 6.
+# See docs/09-splunk-integration-und-feldkonzept.md, section 6.
 
 [tcpout]
 defaultGroup = prod_indexers

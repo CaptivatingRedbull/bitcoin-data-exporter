@@ -5,7 +5,7 @@
     "streamtags": [],
     "groups": {},
     "asyncFuncTimeout": 1000,
-    "description": "btc_parser_app export CSVs -> Splunk (docs chapter 10.6)",
+    "description": "btc_parser_app export CSVs -> Splunk (docs chapter 9.6)",
     "functions": [
       {
         "id": "comment",

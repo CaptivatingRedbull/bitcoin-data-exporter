@@ -8,15 +8,17 @@
 #   btc-fresh-start.sh status  [options]   cron entry, inputs, services, data dirs
 #
 # prepare, in this order:
-#   1. stop btc-parser-rpc-ingest (api-poll, stale-blocks, mempool-watch keep
+#   1. stop btc-parser-rpc-ingest (stale-blocks, mempool-watch keep
 #      running and keep writing their monitored CSVs)
 #   2. make sure the export/rpc batch stanzas carry `disabled = 1`
 #   3. install the current TA-btc-parser-parsing / TA-btc-parser-search from
 #      this checkout into $SPLUNK_HOME/etc/apps (default/ + metadata/ only -
 #      local/ on the server is left alone)
 #   4. stop Splunk, `splunk clean eventdata -index <index>`, and reset the
-#      fishbucket entry of every file the monitor stanzas read (prices,
-#      stale headers, sanctioned events) so Splunk re-reads them from byte 0
+#      fishbucket entry of every file the monitor stanzas read (stale
+#      headers, sanctioned events) so Splunk re-reads them from byte 0.
+#      btc:prices events are deleted too - they come from their own
+#      forwarder input, not from this checkout, so re-ingest them there.
 #   5. delete <data-root>/state/rpc and <data-root>/export/rpc (rpc-ingest
 #      restarts at genesis), recreate the four empty export/rpc directories
 #   6. leave Splunk STOPPED, so nothing at all is indexed before --at
@@ -165,7 +167,7 @@ if [[ "$MODE" == status ]]; then
   echo "cron:      $( [[ -f $CRON_FILE ]] && grep -v '^#' "$CRON_FILE" || echo "none ($CRON_FILE)")"
   conf="$(find_inputs_conf)" && echo "inputs:    $conf - export/rpc batch stanzas $( [[ "$(batch_all_disabled "$conf")" == 1 ]] && echo DISABLED || echo ENABLED)"
   echo "splunk:    $(splunk_cmd status 2>&1 | head -1)"
-  for u in btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-api-poll btc-parser-mempool-watch; do
+  for u in btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-mempool-watch; do
     printf '%-32s %s\n' "$u:" "$(systemctl is-active "$u.service" 2>/dev/null)"
   done
   for d in "${RPC_SUBDIRS[@]}"; do
@@ -186,7 +188,7 @@ if [[ "$MODE" == start ]]; then
   echo "Starting btc-parser.target (rpc-ingest from genesis + the other services if stopped)..."
   systemctl start btc-parser.target
   sleep 30
-  for u in btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-api-poll btc-parser-mempool-watch; do
+  for u in btc-parser-rpc-ingest btc-parser-stale-blocks-ingest btc-parser-mempool-watch; do
     printf '  %-32s %s\n' "$u:" "$(systemctl is-active "$u.service" 2>/dev/null)"
   done
   echo "===== start done ($(date -Is)) ====="
@@ -213,7 +215,8 @@ This will, on $(hostname):
   - stop btc-parser-rpc-ingest
   - make sure the export/rpc batch stanzas in $INPUTS_CONF are disabled
   - install ${APPS_FROM_REPO[*]} from $APP_DIR/splunk into $SPLUNK_HOME/etc/apps
-  - stop Splunk and DELETE ALL EVENTS of index '$INDEX' (splunk clean eventdata)
+  - stop Splunk and DELETE ALL EVENTS of index '$INDEX' (splunk clean eventdata),
+    including btc:prices - re-ingest those through their own forwarder input
   - reset the fishbucket for ${#MONITORED[@]} monitored files (re-read from the start)
   - DELETE $DATA_ROOT/state/rpc and $DATA_ROOT/export/rpc (rpc-ingest restarts at genesis)
   - $( [[ $KEEP_SPLUNK -eq 1 ]] && echo "start Splunk again right away" || echo "leave Splunk STOPPED until $AT" )

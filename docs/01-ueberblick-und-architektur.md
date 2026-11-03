@@ -5,77 +5,63 @@
 ## 1.1 Zweck
 
 `btc_parser_app` ist eine Datenpipeline, die Bitcoin-Blockchain- und
-Mempool-Daten aus zwei unabhängigen Quellen abgreift, in flache CSV-Zeilen
-umwandelt und für den Import in Splunk (oder ein beliebiges anderes Tool,
-das CSV-Dateien einlesen kann) aufbereitet:
+Mempool-Daten vom eigenen Bitcoin-Core-Node abgreift, in flache
+CSV-Zeilen umwandelt und für den Import in Splunk (oder ein beliebiges
+anderes Tool, das CSV-Dateien einlesen kann) aufbereitet:
 
 - **On-Chain-Daten** direkt vom eigenen Bitcoin-Core-Node über
-  `bitcoin-cli` (RPC) – jeder Block und jede Transaktion, aggregiert auf
-  Zeilenebene, inklusive Mining-Pool-Zuordnung.
-- **Netzwerk-/Marktdaten** von der öffentlichen mempool.space-HTTP-API –
-  aktuelle Gebühren, Mempool-Zustand, Preise, Difficulty-Adjustment,
-  Pool-Hashrate-Anteile.
-- **Historische Preisdaten** aus zwei Kraken-Minutenkerzen-Exporten
-  (XBTUSD/XBTEUR), die in dieselbe `prices.csv` eingespielt werden, in die
-  auch der live gepollte Minutenpreis schreibt – eine einzige,
-  durchgängig minütliche Preiszeitreihe ohne separate Tagestabelle.
+  `bitcoin-cli` bzw. JSON-RPC – jeder Block und jede Transaktion,
+  aggregiert auf Zeilenebene, inklusive Mining-Pool-Zuordnung.
+- **Nicht-aktive Chain-Tips** (verwaiste/stale Blöcke) als eigene
+  Datenquelle, aus `getchaintips` des eigenen Nodes und dem
+  GitHub-Datenset `bitcoin-data/stale-blocks`.
+- **Sanktionierte Adressen im Mempool**: Transaktionen, die an eine
+  sanktionierte Adresse zahlen oder von einer solchen ausgeben – ohne den
+  Mempool selbst zu exportieren (Kapitel 10).
 
-Zusätzlich verfolgt eine dritte, unabhängige Pipeline nicht-aktive
-Chain-Tips (verwaiste/stale Blöcke) als eigene Datenquelle, und eine vierte
-überwacht den Mempool des eigenen Nodes auf Transaktionen, die an eine
-sanktionierte Adresse zahlen oder von einer solchen ausgeben – ohne den
-Mempool selbst zu exportieren (Kapitel 11).
+BTC-Preise gehören nicht zu dieser Anwendung: Sie gelangen über einen
+eigenen Forwarder-Input in denselben Splunk-Index (`btc:prices`, siehe
+Kapitel 9.4) und werden vom Dashboard mit ausgewertet.
 
-## 1.2 Vier unabhängige Prozesse
+## 1.2 Drei unabhängige Prozesse
 
-Die Anwendung besteht bewusst aus **vier unabhängigen, dauerhaft
+Die Anwendung besteht bewusst aus **drei unabhängigen, dauerhaft
 laufenden Prozessen** statt einem einzigen Multithreading-Skript. Sie
-teilen sich weder Zustand noch Fehlerdomänen: Ein HTTP-429-Fehler auf der
-API-Seite legt niemals die Blockverarbeitung lahm, und ein Ausfall des
-Bitcoin-Nodes hat keinen Einfluss auf die Preis-Pipeline.
+teilen sich weder Zustand noch Fehlerdomänen: Ein Fehler beim Abruf des
+GitHub-Datensets legt niemals die Blockverarbeitung lahm, und ein
+Absturz von `mempool-watch` hat keinen Einfluss auf `rpc-ingest`.
 
 | Prozess | CLI-Kommando | Quellcode | Aufgabe |
 |---|---|---|---|
 | RPC-Parser | `rpc-ingest` | `btc_parser_app/rpc/ingest.py` | Holt Blöcke vom eigenen Node, flacht sie inkl. aller Transaktionen zu CSV-Zeilen ab, ordnet jeden Block anhand blockeigener Daten einem Mining-Pool zu (keine zusätzlichen Netzwerkaufrufe nötig). Reorg-sicher. |
 | Stale-Blocks-Pipeline | `stale-blocks-ingest` | `btc_parser_app/rpc/stale_blocks.py` | Separate Datenquelle für nicht-aktive Chain-Tips (`getchaintips` + das GitHub-Datenset `bitcoin-data/stale-blocks`). Unabhängig von `rpc-ingest`s eigenem Reorg-Handling. |
-| Mempool-Watch | `mempool-watch` | `btc_parser_app/rpc/mempool_watch.py` | Prüft jede Transaktion, die in den Mempool des eigenen Nodes gelangt (ZMQ `sequence` + periodischer `getrawmempool`-Abgleich), gegen eine Sanktionsliste und exportiert pro Treffer ein Ereignis je Zustandswechsel (`seen`/`confirmed`/`replaced`/`removed`/`unconfirmed`, siehe Kapitel 11). |
-| API-Poller | `api-poll` | `btc_parser_app/api/poller.py` | Pollt den mempool.space `prices`-Endpunkt minütlich, innerhalb eines Rate-Limit-Budgets (Token-Bucket), und schreibt in dieselbe `prices.csv`, die auch der einmalige Preis-Historie-Import befüllt (siehe Kapitel 6). |
+| Mempool-Watch | `mempool-watch` | `btc_parser_app/rpc/mempool_watch.py` | Prüft jede Transaktion, die in den Mempool des eigenen Nodes gelangt (ZMQ `sequence` + periodischer `getrawmempool`-Abgleich), gegen eine Sanktionsliste und exportiert pro Treffer ein Ereignis je Zustandswechsel (`seen`/`confirmed`/`replaced`/`removed`/`unconfirmed`, siehe Kapitel 10). |
 
-Jeder Prozess läuft bis `SIGTERM`/`SIGINT` (bzw. bis `api-poll` einen
-HTTP-429 erhält – dann hält der Prozess bewusst an und muss manuell neu
-gestartet werden, siehe Kapitel 9). Für einen gehärteten Linux-Betrieb
-gibt es für jeden der vier Befehle eine eigene systemd-Unit mit eigener
-Restart-Policy (`systemd/install.sh`, siehe Kapitel 2.5) –
+Jeder Prozess läuft bis `SIGTERM`/`SIGINT`. Für einen gehärteten
+Linux-Betrieb gibt es für jeden der drei Befehle eine eigene systemd-Unit
+mit eigener Restart-Policy (`systemd/install.sh`, siehe Kapitel 2.5) –
 `start.sh`/`stop.sh` decken lokale/Dev-Umgebungen und einfache
 Dauerbetriebs-Hosts ab, starten einen abgestürzten Prozess aber nicht
 automatisch neu.
 
-## 1.3 Punktuell auszuführende Kommandos/Skripte
+## 1.3 Punktuell auszuführende Kommandos
 
-Neben den vier Dauerprozessen gibt es:
+Neben den drei Dauerprozessen gibt es:
 
 - `mempool-watch-check TXID [--blockhash HASH]` – prüft eine einzelne
   Transaktion mit derselben Logik wie `mempool-watch` gegen die
   Sanktionsliste und gibt die Treffer aus, ohne etwas zu schreiben (zum
-  Testen, siehe Kapitel 11.8).
-
+  Testen, siehe Kapitel 10.8).
 - `update-pools-dataset` – aktualisiert das Mining-Pool-Signaturdatenset
   von GitHub (normalerweise automatisch durch `rpc-ingest` erledigt, siehe
   Kapitel 4).
-- `backfill_price_gap.py` – eigenständiges, manuell gestartetes Skript
-  (kein `run.py`-Subkommando), das die Lücke zwischen einem einmaligen,
-  extern durchgeführten Preis-Historie-Import und dem ersten live
-  gepollten `prices`-Wert über mempool.spaces `historical-price`-Endpunkt
-  minutenweise auffüllt, in dieselbe `prices.csv` wie `api-poll` (siehe
-  Kapitel 6.6). Eigenes, flaches Rate-Limiting per `time.sleep()` und ein
-  eigener Fortschritts-Checkpoint für manuelle Neustarts.
 
 ## 1.4 Konfigurationsprinzip
 
-Jeder Tunable-Wert (Endpunkte, Poll-Intervalle, Rate-Limit-Budget,
-RPC-Verbindungsdetails, Ausgabepfade) liegt in `config/config.yaml` – im
-Code ist nichts fest verdrahtet. Jedes Modul erhält seine Konfiguration
-als typisiertes Dataclass-Objekt (`btc_parser_app/config.py`) statt aus
+Jeder Tunable-Wert (RPC-Verbindungsdetails, Poll-Intervalle,
+Ausgabepfade, Sanktionsliste) liegt in `config/config.yaml` – im Code ist
+nichts fest verdrahtet. Jedes Modul erhält seine Konfiguration als
+typisiertes Dataclass-Objekt (`btc_parser_app/config.py`) statt aus
 globalen Konstanten zu lesen; dadurch lässt sich das Verhalten (eine
 andere Konfigurationsdatei, eine in einem Test erzeugte Konfiguration)
 austauschen, ohne Code zu verändern (siehe Kapitel 3).
@@ -87,7 +73,7 @@ austauschen, ohne Code zu verändern (siehe Kapitel 3).
                     │  eigener Bitcoin-    │
                     │  Core-Node           │
                     └──────────┬───────────┘
-                               │ bitcoin-cli (RPC)  +  ZMQ sequence
+                               │ bitcoin-cli / JSON-RPC  +  ZMQ sequence
               ┌────────────────┼──────────────────────┬──────────────────┐
               │                                        │                  │
      ┌────────▼─────────┐              ┌───────────────▼────┐   ┌─────────▼─────────┐
@@ -95,47 +81,12 @@ austauschen, ohne Code zu verändern (siehe Kapitel 3).
      │  (aktive Chain)   │              │ (nicht-aktive Tips)  │   │ (Mempool vs.       │
      └────────┬──────────┘              └─────────┬───────────┘   │  Sanktionsliste)   │
               │                                    │               └─────────┬─────────┘
-     export/rpc/{blocks,transactions}/    stale_block_headers.csv            │
-     + state/rpc (Status-/Index-Dateien,          │              sanctioned_tx_events.csv
-       intern)                            bitcoin-data/stale-blocks   + state/mempool_watch
-                                           (GitHub-Datenset, HTTP)     (flagged.json, intern)
-
-                    ┌──────────────────────┐
-                    │  mempool.space API    │
-                    └──────────┬─────────────┘
-                               │ HTTP GET (Token-Bucket-limitiert)
-                    ┌──────────▼─────────────┐
-                    │       api-poll          │
-                    │  (Endpunkt-Thread       │
-                    │      "prices")          │
-                    └──────────┬─────────────┘
-                               │
-              prices.csv (date_unix,usd,eur; 60s-Takt)
-
-     ┌────────────────────────────┐      ┌───────────────────────────┐
-     │ Kraken-Preis-Historie       │      │ mempool.space              │
-     │ (extern, einmalig, manuell  │      │ /api/v1/historical-price   │
-     │  in prices.csv eingespielt) │      └─────────────┬─────────────┘
-     └────────────┬────────────────┘                    │ HTTP GET (eigenes,
-                  │                                      │ flaches Rate-Limit)
-                  │                         ┌────────────▼─────────────┐
-                  │                         │ backfill_price_gap.py     │
-                  │                         │ (manuell, minutenweise,   │
-                  │                         │  Checkpoint für Neustart) │
-                  │                         └────────────┬─────────────┘
-                  ▼                                       ▼
-     dieselbe prices.csv (dedupliziert über date_unix, keine Duplikate)
+     export/rpc/{blocks,transactions,     stale_block_headers.csv            │
+       inputs,outputs}/                           │              sanctioned_tx_events.csv
+     + state/rpc (Status-/Index-Dateien,  bitcoin-data/stale-blocks   + state/mempool_watch
+       intern)                             (GitHub-Datenset, HTTP)     (flagged.json, intern)
 ```
 
 Alle erzeugten CSV-Dateien sind für den Import in Splunk (oder ein
-vergleichbares Log-/Event-Analysesystem) gedacht – siehe Kapitel 7 für
+vergleichbares Log-/Event-Analysesystem) gedacht – siehe Kapitel 6 für
 Details zum Schema und zur empfohlenen Aufnahmestrategie.
-
-## 1.6 Woher stammt diese Anwendung
-
-Die Anwendung ist ein umstrukturierter, konfigurationsgetriebener Nachfolger
-früherer eigenständiger Prototyp-Skripte für dieselben zwei Datenquellen
-(ein RPC-Block-/Transaktions-Flattener und ein mempool.space-Endpunkt-
-Poller), erweitert um Mining-Pool-Zuordnung, Reorg-Handling,
-durchgängige Konfigurierbarkeit und die in Kapitel 6 beschriebene
-Preis-Pipeline.

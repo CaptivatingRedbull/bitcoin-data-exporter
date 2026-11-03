@@ -7,55 +7,32 @@
 #   - Every output/state/log path lives on the 4TiB `bitcoin-parser-data`
 #     PVC, mounted at /parser-data. The bitcoin-storage-ssh-home PVC (where
 #     this repo is presumably cloned) is only 5Gi - nowhere near enough for
-#     chain data. Layout: /parser-data/logs, /parser-data/state/{rpc,stale}
-#     (internal bookkeeping - never point Splunk here), and
-#     /parser-data/export/{api,rpc,stale} (Splunk-facing - see
+#     chain data. Layout: /parser-data/logs,
+#     /parser-data/state/{rpc,stale,mempool_watch} (internal bookkeeping -
+#     never point Splunk here), and
+#     /parser-data/export/{rpc,stale,mempool_watch} (Splunk-facing - see
 #     rpc.output_dir/state_dir and stale_blocks.output_dir/state_dir below
 #     for what goes where and why).
 #   - rpc.extra_args connects straight to the bitcoin-core pod's RPC
-#     (10.42.5.56:8332 - its in-cluster pod IP, confirmed reachable from
-#     bitcoin-storage-ssh as of 2026-08-13) and authenticates via the
+#     (10.42.5.56:8332 - its in-cluster pod IP, reachable from
+#     bitcoin-storage-ssh) and authenticates via the
 #     cookie file on the shared bitcoin-core-data PVC (/bitcoin/.cookie in
 #     this pod, same volume as bitcoind's own /var/lib/bitcoin) - no
 #     rpcuser/rpcpassword needed. Note: 10.42.5.56 is a pod IP, not a
 #     Service ClusterIP/DNS name, so it will change if the bitcoin-core
-#     pod is ever rescheduled - repoint this at whatever the new IP (or a
-#     stable Service, if one gets added later) is if RPC calls start
-#     failing again.
+#     pod is ever rescheduled - repoint this at the new IP (or a stable
+#     Service) if RPC calls start failing.
 #   - bitcoin_cli_path points at this pod's linuxbrew-installed bitcoin-cli
 #     (not on PATH for non-interactive/subprocess invocations otherwise).
 #
 # Run with:  python run.py --config config/config.production.yaml rpc-ingest
 #        or: BTC_PARSER_CONFIG=config/config.production.yaml ./start.sh
-# (--config works either before or after the subcommand, but put it first -
-#  see cli.py's build_parser() for why "after" used to break.)
+# (--config must come before the subcommand - see cli.py's build_parser().)
 # =============================================================================
 
 logging:
   level: INFO
   log_dir: "/parser-data/logs"
-
-# -----------------------------------------------------------------------
-# mempool.space HTTP API fetcher ("api-poll" command)
-# -----------------------------------------------------------------------
-mempool_api:
-  base_url: "https://mempool.space"
-
-  output_dir: "/parser-data/export/api"
-
-  request_timeout_seconds: 20
-  max_connection_retries: 2
-  retry_backoff_seconds: 3.0
-
-  rate_limit:
-    requests_per_minute: 10
-    bucket_size: 10
-
-  endpoints:
-    - name: prices
-      path: /api/v1/prices
-      parser: prices
-      interval_seconds: 60
 
 # -----------------------------------------------------------------------
 # Mining-pool signature dataset

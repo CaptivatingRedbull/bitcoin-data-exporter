@@ -3,7 +3,7 @@
 # hand - re-run install.sh instead, it's idempotent.
 [Unit]
 Description=btc_parser_app - sanctioned-address mempool watcher (mempool-watch)
-Documentation=file://{{APP_DIR}}/docs/11-mempool-watch-sanktionsadressen.md
+Documentation=file://{{APP_DIR}}/docs/10-mempool-watch-sanktionsadressen.md
 PartOf=btc-parser.target
 After=network-online.target
 Wants=network-online.target

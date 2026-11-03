@@ -50,8 +50,10 @@ search time by `TA-btc-parser-search`, the same app as on the test instance.
   none.
 - **Splunk search head**: `TA-btc-parser-search`, `btc-parser-dashboards`.
 - **Splunk indexer**: `TA-btc-parser-indexes`, `TA-btc-parser-ingest-tuning`.
-- `btc:prices` may already have its own Cribl route (live prices). Make sure
-  only one route handles it.
+- `btc:prices` is not written by btc_parser_app; prices come in through
+  their own forwarder input. The pipeline's `btc:prices` functions apply to
+  those events if they go through this route - make sure only one route
+  handles them.
 
 ## Checklist before go-live
 

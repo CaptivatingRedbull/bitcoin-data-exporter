@@ -25,10 +25,7 @@ import io
 import logging
 from dataclasses import dataclass
 
-import requests
-
-from btc_parser_app.api.client import ApiClient, FetchError, RateLimited
-from btc_parser_app.api.rate_limiter import TokenBucket
+from btc_parser_app.common.http_fetch import FetchError, get_text
 from btc_parser_app.config import StaleBlocksGithubConfig
 
 logger = logging.getLogger(__name__)
@@ -37,12 +34,6 @@ _HEADERS = {
     "Accept": "text/csv, text/plain",
     "User-Agent": "btc_parser_app-stale-blocks",
 }
-
-# This module makes at most one request per call, so a generous single-slot
-# bucket is really just there to reuse ApiClient's retry/timeout handling
-# (see api/mining_pools_dataset.py, which does the same for its own
-# one-shot GitHub-hosted fetch).
-_FETCH_RATE_LIMIT = TokenBucket(requests_per_minute=30, bucket_size=1)
 
 
 class GithubFetchError(Exception):
@@ -60,18 +51,9 @@ class GithubHeaderRow:
 def fetch_stale_blocks_csv(
     config: StaleBlocksGithubConfig, timeout_seconds: float
 ) -> list[GithubHeaderRow]:
-    session = requests.Session()
-    session.headers.update(_HEADERS)
-    client = ApiClient(
-        session=session,
-        rate_limiter=_FETCH_RATE_LIMIT,
-        timeout_seconds=timeout_seconds,
-        max_connection_retries=2,
-        retry_backoff_seconds=3.0,
-    )
     try:
-        text = client.get_text(config.csv_url)
-    except (FetchError, RateLimited) as exc:
+        text = get_text(config.csv_url, headers=_HEADERS, timeout_seconds=timeout_seconds)
+    except FetchError as exc:
         raise GithubFetchError(f"{config.csv_url}: {exc}") from exc
 
     rows: list[GithubHeaderRow] = []

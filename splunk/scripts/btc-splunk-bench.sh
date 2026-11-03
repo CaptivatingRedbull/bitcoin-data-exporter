@@ -2,15 +2,14 @@
 # btc-splunk-bench.sh - Splunk performance benchmark for index=btc_parser.
 #
 # The searches mirror the BTC Mempool Explorer dashboard and its scheduled
-# searches, rewritten for the indexed-field concept of docs chapter 10.6:
+# searches, following the indexed-field concept of docs chapter 9.6:
 # tstats only over fields that are indexed (all of btc:blocks / btc:prices /
 # btc:stale_block_headers / btc:sanctioned_tx_events; on transactions/
 # inputs/outputs only block_height, is_coinbase, version, vin_count,
 # vout_count, prevout_type, prevout_generated, relative_locktime_type,
 # script_type). Everything else - fee rates, values, addresses - is a raw
-# search, bounded to a fixed time window. Every search also runs on an
-# index where every column is indexed, so a run before and after a
-# re-index compares like with like.
+# search, bounded to a fixed time window. Compare two runs (e.g. before
+# and after a tuning change) with --compare.
 #
 # Usage:
 #   SPLUNK_AUTH='user:pass' btc-splunk-bench.sh <label> [GROUP...]
@@ -30,8 +29,8 @@
 #   P  btc:prices tstats
 #   S  sanctioned tx events / stale headers
 #   T  tstats over the indexed detail fields, all time
-#   R  raw searches replacing the dashboard's former tstats on now
-#      search-time fields (fees, values, addresses), fixed windows
+#   R  raw searches over search-time fields (fees, values, addresses),
+#      fixed windows
 #   C  concurrency: 4 heavy tstats at once
 #   H  heavy all-time raw searches (balances, unspent, yearly percentiles) -
 #      expect TIMEOUT; only when named explicitly
@@ -156,7 +155,7 @@ if want T; then
   run T10 '| tstats count where index=$IDX sourcetype=btc:outputs is_coinbase=true by _time span=1y'
 fi
 
-# --- R: raw searches for the formerly-tstats panels (fixed windows) ----------
+# --- R: raw searches over search-time fields (fixed windows) -----------------
 if want R; then
   run R1 "search index=\$IDX sourcetype=btc:transactions $WEEK | stats count avg(fee_rate_sat_vb) AS avg_rate max(fee_rate_sat_vb) AS max_rate"
   run R2 "search index=\$IDX sourcetype=btc:outputs is_op_return=true $YEAR | stats count sum(script_bytes) AS bytes"

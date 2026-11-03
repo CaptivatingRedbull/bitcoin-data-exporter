@@ -179,7 +179,7 @@ class HttpTransportTest(unittest.TestCase):
 
 
 class CliTransportTest(unittest.TestCase):
-    """The pre-existing bitcoin-cli path: same argv as before, same parsing."""
+    """The bitcoin-cli path: argv construction and output parsing."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

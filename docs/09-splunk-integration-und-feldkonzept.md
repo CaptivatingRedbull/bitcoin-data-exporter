@@ -1,8 +1,8 @@
-# 10. Splunk-Integration und Feldkonzept
+# 9. Splunk-Integration und Feldkonzept
 
 [← Index](00-index.md)
 
-Dieses Kapitel ergänzt Kapitel 7 (das beschreibt, **was die Anwendung
+Dieses Kapitel ergänzt Kapitel 6 (das beschreibt, **was die Anwendung
 selbst erzeugt**) um die konkrete, umsetzbare Splunk-seitige
 Konfiguration: welche Dateien liegen den fertigen `.conf`-Dateien unter
 [`splunk/`](../splunk/) zugrunde, welches Feld wird in Splunk zu welchem
@@ -10,7 +10,7 @@ indizierten Feld, und warum. Bei Widersprüchen zwischen diesem Kapitel und
 den tatsächlichen `.conf`-Dateien unter `splunk/` sind Letztere
 maßgeblich.
 
-## 10.1 Test- vs. Produktivumgebung
+## 9.1 Test- vs. Produktivumgebung
 
 | | Test | Produktiv |
 |---|---|---|
@@ -26,7 +26,7 @@ extrahiert. Dashboards und Suchen laufen deshalb unverändert in beiden
 Umgebungen. Die Cribl-Einrichtung beschreibt
 [`cribl/README.md`](../cribl/README.md).
 
-## 10.2 Apps und Zielorte
+## 9.2 Apps und Zielorte
 
 Alle feldbezogenen Dateien werden von
 [`splunk/build_field_config.py`](../splunk/build_field_config.py) aus
@@ -40,27 +40,27 @@ veraltet ist.
 | App | Wohin | Inhalt |
 |---|---|---|
 | [`TA-btc-parser-inputs/`](../splunk/TA-btc-parser-inputs/) | Instanz, die die Dateien liest (Test: Standalone; Prod: UF) | nur `inputs.conf` (plus optional `outputs.conf`) |
-| [`TA-btc-parser-parsing/`](../splunk/TA-btc-parser-parsing/) | **nur** Test-Standalone | Index-Time: `props.conf`/`transforms.conf`, siehe 10.6. **Nie auf einen UF**: `INDEXED_EXTRACTIONS` würde den UF die kleinen Sourcetypes selbst parsen und jede Spalte als indiziertes Feld an Cribl schicken lassen. Hinter Cribl wirkungslos. |
+| [`TA-btc-parser-parsing/`](../splunk/TA-btc-parser-parsing/) | **nur** Test-Standalone | Index-Time: `props.conf`/`transforms.conf`, siehe 9.6. **Nie auf einen UF**: `INDEXED_EXTRACTIONS` würde den UF die kleinen Sourcetypes selbst parsen und jede Spalte als indiziertes Feld an Cribl schicken lassen. Hinter Cribl wirkungslos. |
 | [`TA-btc-parser-search/`](../splunk/TA-btc-parser-search/) | Search Head (Test: Standalone) | Search-Time: `REPORT`-Extraktion der nicht indizierten Spalten, `fields.conf`, `KV_MODE = none`; per `metadata/default.meta` systemweit exportiert |
-| `TA-btc-parser-indexes/`, `TA-btc-parser-ingest-tuning/` | Indexer (Tuning auch auf dem UF) | Kapitel 12 |
+| `TA-btc-parser-indexes/`, `TA-btc-parser-ingest-tuning/` | Indexer (Tuning auch auf dem UF) | Kapitel 11 |
 | [`cribl/btc_parser_pipeline.json`](../cribl/btc_parser_pipeline.json) | Prod: Cribl | Index-Time-Gegenstück zu `TA-btc-parser-parsing` |
 
-## 10.3 Verzeichnis-zu-Input-Zuordnung
+## 9.3 Verzeichnis-zu-Input-Zuordnung
 
-Direkte Umsetzung von Kapitel 7.4 in `inputs.conf`-Stanzas
+Direkte Umsetzung von Kapitel 6.4 in `inputs.conf`-Stanzas
 ([`TA-btc-parser-inputs/local/inputs.conf`](../splunk/TA-btc-parser-inputs/local/inputs.conf)):
 
 | Verzeichnis | Splunk-Input | Warum |
 |---|---|---|
 | `export/rpc/{blocks,transactions,inputs,outputs}/` | `batch` (`move_policy = sinkhole`) | Ein Part erscheint hier laut Kapitel 4.6 immer erst vollständig fertig – nie während er noch beschrieben wird. `batch` kann ihn deshalb gefahrlos konsumieren und löschen. |
-| `export/api/`, `export/stale/`, `export/mempool_watch/` | `monitor` | Der aktuelle Part wächst hier laufend weiter (Kapitel 3.2/5.5/11.6). Ein `batch`-Input würde riskieren, eine noch offene Datei mitten im Schreiben zu greifen. `monitor` löscht nie – alte rotierte Parts müssen separat (Skript/Cron) aufgeräumt werden, sobald Splunk sie nachweislich indiziert hat. |
-| Jedes `state/`-Verzeichnis | **kein Splunk-Input** | Siehe 10.5 – interne Buchführung, nie ansprechen. |
+| `export/stale/`, `export/mempool_watch/` | `monitor` | Der aktuelle Part wächst hier laufend weiter (Kapitel 5.5/10.6). Ein `batch`-Input würde riskieren, eine noch offene Datei mitten im Schreiben zu greifen. `monitor` löscht nie – alte rotierte Parts müssen separat (Skript/Cron) aufgeräumt werden, sobald Splunk sie nachweislich indiziert hat. |
+| Jedes `state/`-Verzeichnis | **kein Splunk-Input** | Siehe 9.5 – interne Buchführung, nie ansprechen. |
 
 **`crcSalt = <SOURCE>` auf jeder einzelnen Stanza:** Splunks Standard-
 Mechanismus zur Duplikaterkennung ("wurde diese Datei schon indiziert?")
 hasht nur die ersten/letzten paar hundert Byte des Dateiinhalts. Da jeder
 Part derselben logischen CSV mit exakt derselben Kopfzeile beginnt
-(Kapitel 7.6), kann Splunk ohne `crcSalt` einen neuen, noch nie gesehenen
+(Kapitel 6.6), kann Splunk ohne `crcSalt` einen neuen, noch nie gesehenen
 Part fälschlich für einen bereits konsumierten/gelöschten halten und ihn
 stillschweigend überspringen. `crcSalt = <SOURCE>` bezieht stattdessen den
 vollständigen Dateipfad (inkl. Part-Nummer) in die Prüfung ein und macht
@@ -68,10 +68,10 @@ sie damit eindeutig – ein Standard-Stolperstein bei vielen kleinen Dateien
 mit identischer Kopfzeile, nicht spezifisch für diese Anwendung, aber hier
 garantiert relevant.
 
-## 10.4 Sourcetypes und Zeitfelder
+## 9.4 Sourcetypes und Zeitfelder
 
 Jede Datei bekommt einen eigenen Sourcetype (`btc:<name>`), weil jede ein
-eigenes Spaltenschema hat (Kapitel 4.9–4.12, 5.6, 6.4, 11.6) – ein gemeinsamer
+eigenes Spaltenschema hat (Kapitel 4.9–4.12, 5.6, 10.6) – ein gemeinsamer
 Sourcetype für mehrere Schemata würde Feld-Extraktion und
 Zeitstempel-Zuordnung gegenseitig stören.
 
@@ -83,9 +83,18 @@ Zeitstempel-Zuordnung gegenseitig stören.
 | `outputs*.csv` | `btc:outputs` | `block_time` | `%s` |
 | `stale_block_headers*.csv` | `btc:stale_block_headers` | `observed_at` (ISO-8601 UTC) | `%Y-%m-%dT%H:%M:%SZ` |
 | `sanctioned_tx_events*.csv` | `btc:sanctioned_tx_events` | `observed_at` (Zeitpunkt des Ereignisses, ISO-8601 UTC) | `%Y-%m-%dT%H:%M:%SZ` |
-| `prices*.csv` | `btc:prices` | `date_unix` (Preis-eigener Zeitstempel, **nicht** Poll-Zeitpunkt) | `%s` |
+| Preis-CSV (eigener Forwarder-Input, siehe unten) | `btc:prices` | `date_unix` (Preis-eigener Zeitstempel) | `%s` |
 
-Alle Zeitstempel sind UTC (Kapitel 7.5) – jede Stanza setzt deshalb
+**`btc:prices` stammt nicht aus dieser Anwendung.** Minütliche
+BTC/USD/EUR-Preise (`date_unix,usd,eur`) gelangen über einen eigenen
+Forwarder-Input in denselben Index `btc_parser`; `TA-btc-parser-inputs`
+enthält dafür keine Stanza. Der Sourcetype ist trotzdem in
+`export_schema.py` beschrieben, damit Parsing-/Search-Time-Confs, die
+Cribl-Pipeline und die `tstats`-Prüfung des Dashboards (`usd`/`eur` sind
+indiziert) ihn kennen. Das Dashboard wertet ihn in den Preis-Panels und
+für USD-Umrechnungen aus (9.9).
+
+Alle Zeitstempel sind UTC (Kapitel 6.5) – jede Stanza setzt deshalb
 zusätzlich explizit `TZ = UTC`, statt sich auf die Host-Zeitzone des
 Forwarders/Indexers zu verlassen.
 
@@ -96,13 +105,13 @@ aus dem benannten, bereits geparsten Feld nehmen – robuster als eine
 Zeichenposition, die bricht, sobald sich die Spaltenreihenfolge einer
 `.csv` in einer zukünftigen Version ändert.
 
-## 10.5 Welche Daten Splunk überhaupt sehen
+## 9.5 Welche Daten Splunk überhaupt sehen
 
 **Grundsatzentscheidung, auf Verzeichnisebene, nicht auf Feldebene:** Jede
 `state/`-Datei (`current.csv`, `latest.csv`, `block_status.csv`,
 `index/index.csv`, `reorg/*.csv`, `registry.csv`, `flagged.json`, die
 `*_part_seq.csv`-Zähler) bekommt **keinen** Splunk-Input. Gründe (siehe
-auch Kapitel 7.2):
+auch Kapitel 6.2):
 
 - Es sind reine Buchführungs-/Zustandsdateien der Anwendung selbst – kein
   eigenständiger Analysewert, der nicht bereits über die `export/`-Dateien
@@ -122,7 +131,7 @@ auch Kapitel 7.2):
   in Splunk unverändert blieben, was zu Verwirrung bei der Auswertung
   führen würde.
 
-## 10.6 Feldebene: welche Spalten indizierte Felder werden
+## 9.6 Feldebene: welche Spalten indizierte Felder werden
 
 Jede Spalte bleibt in `_raw` und ist zur Suchzeit verfügbar. Entschieden wird
 nur, welche Spalten **zusätzlich** als indiziertes Feld in die tsidx-Dateien
@@ -181,42 +190,43 @@ verankerten Regex über die ganze Zeile. Die indizierten Spalten werden dort
 enthalten nie Kommas in Werten (nur Hashes, Zahlen, Booleans, Skripttypen,
 Adressen), daher ist das Zerlegen an jedem Komma exakt.
 
-**Folge für SPL:** `tstats` funktioniert auf den großen Sourcetypes nur noch
+**Folge für SPL:** `tstats` funktioniert auf den großen Sourcetypes nur
 mit den indizierten Feldern oben (plus `_time`, `sourcetype`, …).
 `tstats max(fee_sats)`, `perc90(fee_rate_sat_vb)`, `sum(value_sats) by address`
-liefern dort nichts mehr. Solche Auswertungen laufen als normale Suche mit
+liefern dort nichts. Solche Auswertungen laufen als normale Suche mit
 `stats`/`timechart` über ein begrenztes Zeitfenster, oder langfristig über
 die Block-Aggregate in `btc:blocks`. Beispiele für beides enthält das
 Benchmark-Skript [`splunk/scripts/btc-splunk-bench.sh`](../splunk/scripts/btc-splunk-bench.sh)
 (Gruppen T und R). Das Dashboard und seine gespeicherten Suchen
-(`btc-parser-dashboards`, 10.9) sind darauf umgestellt.
+(`btc-parser-dashboards`, 9.9) folgen diesem Konzept.
 
 `TRUNCATE` bleibt auf dem Standard: Die einzigen potenziell sehr langen
 Rohfelder (`scriptsig_hex`/`script_hex`) werden gar nicht erst exportiert
 (Kapitel 4.11/4.12), die längste Zeile (`transactions.csv`) liegt weit unter
 10.000 Byte.
 
-## 10.7 Index
+## 9.7 Index
 
 Retention und Größe des Index sind für historische Daten ab 2009
 kritisch – Splunks Standardwerte würden den Großteil der Chain löschen;
-siehe Kapitel 12 und `splunk/TA-btc-parser-indexes/`.
+siehe Kapitel 11 und `splunk/TA-btc-parser-indexes/`.
 
-Alle Sourcetypes verwenden in `inputs.conf` denselben Index `btc_parser`
+Alle Sourcetypes verwenden denselben Index `btc_parser` (auch der
+Preis-Input, 9.4)
 (vor dem ersten Start auf dem Indexer anlegen – `TA-btc-parser-indexes`,
-Kapitel 12; Indizes werden nicht automatisch erstellt). Ein gemeinsamer Index für alle Sourcetypes
+Kapitel 11; Indizes werden nicht automatisch erstellt). Ein gemeinsamer Index für alle Sourcetypes
 genügt hier, weil Zugriffskontrolle und Aufbewahrungsfristen für alle
 Dateien dieser Anwendung identisch sind; eine Aufteilung nach Index lohnt
 sich erst, sobald das für einzelne Sourcetypes nicht mehr zutrifft (z. B.
 unterschiedliche Retention für `btc:prices` vs. den Rest).
 
-## 10.8 Testdaten-Staging (kleines Sample statt vollem Export)
+## 9.8 Testdaten-Staging (kleines Sample statt vollem Export)
 
 Für einen ersten Test mit begrenztem Ingest-Volumen (z. B. ein enges
-Lizenz-Tageslimit): **niemals** die `batch`-Stanzas aus 10.3 direkt
+Lizenz-Tageslimit): **niemals** die `batch`-Stanzas aus 9.3 direkt
 gegen den echten, produktiven `export/rpc/`-Ordner laufen lassen, nur um
 ein paar Dateien probeweise einzulesen – `batch` konsumiert **und
-löscht** jede erfasste Datei unwiderruflich (10.3). Stattdessen die
+löscht** jede erfasste Datei unwiderruflich (9.3). Stattdessen die
 gewünschten Beispiel-Parts (z. B. den jeweils letzten
 `blocks.NNNNNN.csv`/`transactions.NNNNNN.csv`/`inputs.NNNNNN.csv`/
 `outputs.NNNNNN.csv`) in ein separates, eigens dafür angelegtes
@@ -224,7 +234,7 @@ Staging-Verzeichnis **kopieren** und die Test-`inputs.conf` gegen diese
 Kopie zeigen lassen. So bleibt der echte Export unangetastet, falls beim
 Ausprobieren etwas falsch konfiguriert ist.
 
-Größenanhaltspunkt: Jeder Part ist auf ~900 MB gedeckelt (Kapitel 7.3);
+Größenanhaltspunkt: Jeder Part ist auf ~900 MB gedeckelt (Kapitel 6.3);
 vier "letzte" Parts (einer je Datei-Typ) können also im ungünstigsten
 Fall zusammen nahe an ein enges Ingest-Budget herankommen. Vor dem
 Hochladen mit `ls -lh` die tatsächliche Größe prüfen – der jeweils
@@ -232,7 +242,7 @@ aktuellste Part ist meist nur teilweise gefüllt – und im Zweifel mit
 `head -n <N> <part>.csv > sample.csv` (Kopfzeile bleibt erhalten) weiter
 kürzen, um Ingest-Budget für mehrere Testdurchläufe übrig zu behalten.
 
-## 10.9 Beispiel-Dashboard „BTC Mempool Explorer“ (Dashboard Studio)
+## 9.9 Beispiel-Dashboard „BTC Mempool Explorer“ (Dashboard Studio)
 
 Ein Test-Dashboard im Dashboard-Studio-Format, das die bekannten
 mempool.space-Grafiken auf Basis der eigenen Exporte nachbildet. Es liegt
@@ -249,11 +259,11 @@ Ausgaben von Hand bearbeiten):
   dieselbe Definition als installierbare App (Search Head; Test:
   Standalone-Instanz, nach `$SPLUNK_HOME/etc/apps/` kopieren und Splunk
   neu starten). Setzt `TA-btc-parser-search` voraus (Search-Time-Felder,
-  10.2).
+  9.2).
 
 Globale Eingaben (über allen Tabs): Zeitraum (Standard: letzte 30 Tage),
 Bucket-Größe für alle Zeitreihen (`$span$`, Standard 1 Tag) und Index
-(`$idx$`, Standard `btc_parser`, siehe 10.7).
+(`$idx$`, Standard `btc_parser`, siehe 9.7).
 
 | Tab | Inhalt | Quelle |
 |---|---|---|
@@ -264,29 +274,30 @@ Bucket-Größe für alle Zeitreihen (`$span$`, Standard 1 Tag) und Index
 | Transactions | SegWit-/Taproot-/RBF-Anteil, Output-Skripttypen, OP_RETURN, Coin Days Destroyed, ausgegebener Wert nach Coin-Alter | `btc:blocks`, `btc:inputs` |
 | Price | USD/EUR-Verlauf, Tagesänderung, Tages-OHLC | `btc:prices` |
 | Chain Health | Stale-Tips (Kapitel 5), Höhen mit mehr als einem exportierten Blockhash (Reorgs, Kapitel 4.4) | `btc:stale_block_headers`, `btc:blocks` |
-| Sanctions Watch | Ereignisse je Typ, noch unbestätigte Transaktionen, Treffer je gelisteter Entität, letzte Ereignisse (Kapitel 11) | `btc:sanctioned_tx_events` |
+| Sanctions Watch | Ereignisse je Typ, noch unbestätigte Transaktionen, Treffer je gelisteter Entität, letzte Ereignisse (Kapitel 10) | `btc:sanctioned_tx_events` |
 | All-time Records | Rekorde über den gesamten Index unabhängig vom Zeitraum-Picker: höchste/niedrigste Fee, größte Transaktion, meiste In-/Outputs, ältester bewegter Coin, Block-Rekorde, größter einzelner Coin, größte unverbrauchte Outputs ≥ 100 BTC, Preis-ATH/-ATL, alle Transaktionen mit gelisteten Adressen in den Chain-Daten; liest nur vorberechnete Ergebnisse (siehe unten); einzig der Saldoverlauf einer Adresse sucht live, sobald die Eingabe *Address* gesetzt ist | alle |
 
 Hinweise:
 
-- Die Exporte enthalten **keinen** Mempool-Snapshot (der API-Poller
-  exportiert nur `prices`, Kapitel 6.1). Die „Mempool“-Grafiken zeigen
+- Die Exporte enthalten **keinen** Mempool-Snapshot (`mempool-watch`
+  exportiert nur Ereignisse zu Sanktionsadressen, Kapitel 10). Die
+  „Mempool“-Grafiken zeigen
   deshalb, was im jeweiligen Bucket **bestätigt** wurde – nicht, was
   gerade wartet.
 - Alle Block-Panels hängen an einer gemeinsamen Basissuche, die pro Höhe
   nur den zuletzt indizierten Block behält (`dedup height` nach
   `_indextime`), damit von einem Reorg abgehängte Blöcke (die in Splunk
-  stehen bleiben, siehe 10.5) nicht doppelt zählen. Als nicht
+  stehen bleiben, siehe 9.5) nicht doppelt zählen. Als nicht
   transformierende Basissuche behält Splunk davon höchstens 500.000
   Events – für sehr lange Zeiträume (mehrere Jahre Blöcke) die Panels
   einzeln als eigene Suchen ausführen.
 - Die Panels auf `btc:transactions`/`btc:inputs` (Fee-Bänder,
   Fee-Perzentile, Coin-Alter) brauchen Search-Time-Felder (`fee_rate_sat_vb`,
-  `vsize`, `value_sats`, 10.6) und lesen deshalb jede Zeile des Zeitraums –
+  `vsize`, `value_sats`, 9.6) und lesen deshalb jede Zeile des Zeitraums –
   den Zeitraum kurz halten (Tage bis wenige Wochen). Die Difficulty-Epoche und der 24h-Preis
   verwenden feste Zeiträume (letzte 20 Tage bzw. 24 Stunden),
   unabhängig vom Zeitraum-Picker.
-- `tstats` nur dort, wo alle verwendeten Felder indiziert sind (10.6):
+- `tstats` nur dort, wo alle verwendeten Felder indiziert sind (9.6):
   `btc:blocks`, `btc:prices`, `btc:stale_block_headers`. Auf
   `btc:transactions`/`btc:inputs`/`btc:outputs` gibt es nur `block_height`,
   `is_coinbase`, `version`, `vin_count`, `vout_count`, `prevout_type`,
@@ -341,7 +352,7 @@ Panels dieses Tabs leer bzw. melden eine fehlende Suche/Lookup.
   die Stundenfenster nie überlappen und kein Lauf ausfällt
   (`realtime_schedule = 0`). `_update` sucht dabei nur Events der letzten
   7 Tage Ereigniszeit – Daten mit älterem `_time` (Katch-up/Backfill alter
-  Blöcke, Preis-Backfill) erfasst erst ein `_rebuild`.
+  Blöcke, nachträglich eingespielte Preise) erfasst erst ein `_rebuild`.
 - `btc_rec_big_outputs` hält Outputs ≥ 100 BTC und ihre Ausgaben. Zeilen,
   deren Erzeugung und Ausgabe beide gesehen wurden, fliegen beim Merge
   raus; übrig bleiben die unverbrauchten (und Ausgaben, deren Erzeugung
@@ -349,8 +360,7 @@ Panels dieses Tabs leer bzw. melden eine fehlende Suche/Lookup.
   Reihenfolge).
 - **Rebuilds:** Ohne indizierte Messwerte ist jeder `_rebuild` ein
   normaler Durchlauf über die ganze Chain (Transaktionen bzw. alle
-  Inputs/Outputs) und dauert Stunden. Deshalb nicht mehr wöchentlich
-  geplant: **einmal nach dem Backfill** von Hand starten (*Settings →
+  Inputs/Outputs) und dauert Stunden. Deshalb nicht geplant: **einmal nach dem Backfill** von Hand starten (*Settings →
   Searches, reports, and alerts → Run*), danach halten die stündlichen
   `_update` die KV Stores aktuell. Reihenfolge egal, aber nicht alle fünf
   gleichzeitig.

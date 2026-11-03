@@ -95,9 +95,8 @@ class PartSequencer:
             # First-ever use: nothing persisted yet, so seed from whatever's
             # on disk (this scan only ever happens once - see module
             # docstring). state_base wins if it has anything - that's an
-            # open, appendable part (e.g. left over from a manual migration
-            # into the new state_dir/output_dir layout, or an
-            # interrupted run). Otherwise fall back to export_base's highest
+            # open, appendable part (e.g. left over from an interrupted
+            # run). Otherwise fall back to export_base's highest
             # closed part. Neither existing means a genuinely fresh start.
             state_highest = max(existing_part_numbers(state_base), default=0)
             if state_highest:

@@ -6,11 +6,6 @@ licensed), so the RPC parser works out of the box without ever running
 this. Call `refresh_if_stale` periodically (default: weekly, matching the
 upstream project's own update cadence, see config.yaml) to pick up newly
 launched pools and address rotations.
-
-This intentionally does not share the mempool.space TokenBucket: it talks
-to raw.githubusercontent.com, a different host with its own limits, so
-counting it against the mempool.space budget would just make that budget
-harder to reason about for no benefit.
 """
 
 from __future__ import annotations
@@ -20,18 +15,13 @@ import logging
 import time
 from typing import Any
 
-import requests
-
-from btc_parser_app.api.client import ApiClient, FetchError, RateLimited
-from btc_parser_app.api.rate_limiter import TokenBucket
 from btc_parser_app.common.atomic_write import atomic_replace
+from btc_parser_app.common.http_fetch import FetchError, get_json
 from btc_parser_app.config import MiningPoolsDatasetConfig
 
 logger = logging.getLogger(__name__)
 
-# This module makes at most one request per call, so a generous single-slot
-# bucket is really just there to reuse ApiClient's retry/timeout handling.
-_DATASET_FETCH_RATE_LIMIT = TokenBucket(requests_per_minute=30, bucket_size=1)
+_HEADERS = {"User-Agent": "btc_parser_app-pools-updater/1.0", "Accept": "application/json"}
 
 
 def _validate_pools(pools: Any) -> list[dict[str, Any]]:
@@ -48,18 +38,7 @@ def _validate_pools(pools: Any) -> list[dict[str, Any]]:
 def fetch_pools_dataset(config: MiningPoolsDatasetConfig) -> list[dict[str, Any]]:
     """Fetch and validate the pool dataset from config.source_url. Raises on
     any failure - callers decide whether to fall back to the local copy."""
-    session = requests.Session()
-    session.headers.update(
-        {"User-Agent": "btc_parser_app-pools-updater/1.0", "Accept": "application/json"}
-    )
-    client = ApiClient(
-        session=session,
-        rate_limiter=_DATASET_FETCH_RATE_LIMIT,
-        timeout_seconds=20,
-        max_connection_retries=2,
-        retry_backoff_seconds=3.0,
-    )
-    data = client.get_json(config.source_url)
+    data = get_json(config.source_url, headers=_HEADERS, timeout_seconds=20)
     return _validate_pools(data)
 
 
@@ -98,7 +77,7 @@ def refresh_if_stale(config: MiningPoolsDatasetConfig) -> bool:
     try:
         refresh(config)
         return True
-    except (FetchError, RateLimited, ValueError, OSError) as exc:
+    except (FetchError, ValueError, OSError) as exc:
         if config.local_path.exists():
             logger.warning(
                 "Failed to refresh %s (%s) - keeping existing copy.",

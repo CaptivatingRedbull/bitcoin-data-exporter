@@ -1,7 +1,7 @@
 """Block fetch + parse for rpc-ingest, and the process pool that runs it
 ahead of the writer while catching up (rpc.catchup_workers > 1).
 
-Catch-up used to be strictly sequential, one block at a time: getblockhash,
+Sequential catch-up handles one block at a time: getblockhash,
 getblock <hash> 3, json.loads, aggregate_block - all CPU-bound Python on one
 core, with the node and disk mostly idle. iter_parsed_blocks() moves exactly
 that per-block work (parse_block) into a pool of worker processes and hands
@@ -16,7 +16,7 @@ ingest.py only uses this for heights at least rpc.max_reorg_depth below the
 tip (see _run_one_pass): a block that deep is already treated as final by
 the reorg walk-back, so fetching its hash a few dozen blocks ahead of the
 writer can't change what gets exported. The last stretch before the tip,
-and all steady-state tip-following, stay on the sequential path unchanged.
+and all steady-state tip-following, stay on the sequential path.
 """
 
 from __future__ import annotations

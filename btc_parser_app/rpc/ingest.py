@@ -65,7 +65,6 @@ from typing import Any
 
 import polars as pl
 
-from btc_parser_app.api.mining_pools_dataset import refresh_if_stale
 from btc_parser_app.common.stop_signal import install_stop_signal
 from btc_parser_app.config import AppConfig, RpcConfig
 from btc_parser_app.rpc.catchup import (
@@ -81,6 +80,7 @@ from btc_parser_app.rpc.client import (
     get_block_header,
 )
 from btc_parser_app.rpc.mining_pools import PoolMatcher, load_pool_matcher
+from btc_parser_app.rpc.mining_pools_dataset import refresh_if_stale
 from btc_parser_app.rpc.part_writer import PartSequencer
 from btc_parser_app.rpc.reorg_state import (
     CURRENT_INDEX_SCHEMA_VERSION,

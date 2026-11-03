@@ -76,10 +76,9 @@ def run_cli(config: RpcConfig, cmd: list[str], *, retry_rpc_errors: bool = True)
 
     Retries a failed invocation (non-zero exit, timeout, or the binary
     being briefly unreachable) up to rpc.max_cli_retries times, waiting
-    rpc.cli_retry_backoff_seconds between attempts - mirroring the
-    retry/timeout handling api/client.py already has for the mempool.space
-    side. A bitcoind restart, cookie rotation, or a momentary network blip
-    used to raise straight through every caller and kill the daemon.
+    rpc.cli_retry_backoff_seconds between attempts, so a bitcoind restart,
+    cookie rotation, or a momentary network blip doesn't raise straight
+    through every caller and kill the daemon.
 
     retry_rpc_errors=False raises RpcError immediately for an RPC-level
     error instead of retrying it - for callers (mempool-watch) where e.g.

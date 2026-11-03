@@ -1,6 +1,6 @@
 # btc_parser_app – Dokumentation
 
-Technische Referenzdokumentation für `full_app/` (Python-Paket
+Technische Referenzdokumentation für dieses Repository (Python-Paket
 `btc_parser_app`). Zielgruppe: jede Person, die diese Anwendung betreiben,
 warten, erweitern oder von Grund auf verstehen muss, ohne vorheriges Wissen
 über das Projekt vorauszusetzen.
@@ -12,7 +12,7 @@ Stand zum Zeitpunkt ihrer Erstellung.
 ## Kapitelübersicht
 
 1. [Überblick und Architektur](01-ueberblick-und-architektur.md)
-   Was die Anwendung tut, welche vier Prozesse sie umfasst, warum sie so
+   Was die Anwendung tut, welche drei Prozesse sie umfasst, warum sie so
    aufgeteilt ist, und welche Datenquellen sie anzapft.
 2. [Installation und Betrieb](02-installation-und-betrieb.md)
    Voraussetzungen, Einrichtung, `start.sh`/`stop.sh`, alle CLI-Kommandos,
@@ -26,32 +26,29 @@ Stand zum Zeitpunkt ihrer Erstellung.
 5. [Stale-Blocks-Pipeline](05-stale-blocks-pipeline.md)
    Wie `stale-blocks-ingest` nicht-aktive Chain-Tips verfolgt und warum sie
    bewusst nur Blockheader statt vollständiger Blöcke sammelt.
-6. [API-Poller und Pricing](06-api-poller-und-pricing.md)
-   Wie `api-poll` die mempool.space-Endpunkte abfragt, das
-   Rate-Limit-Budget verwaltet, und wie die tägliche Preis-Pipeline
-   (Kraken-Import + Lückenfüllung) funktioniert.
-7. [Ausgabedateien und Datenaufnahme](07-ausgabedateien-und-datenaufnahme.md)
+6. [Ausgabedateien und Datenaufnahme](06-ausgabedateien-und-datenaufnahme.md)
    Vollständige Übersicht aller von der Anwendung erzeugten Dateien, deren
    Spaltenschema, die Dateirotation, und wie diese Dateien in Splunk (oder
    ein vergleichbares System) eingelesen werden sollten.
-8. [Quellcode-Referenz](08-quellcode-referenz.md)
+7. [Quellcode-Referenz](07-quellcode-referenz.md)
    Datei-für-Datei-Übersicht über das gesamte Repository: was jede Datei
    enthält und wofür sie zuständig ist.
-9. [Logging, Fehlerbehandlung und bekannte Einschränkungen](09-logging-fehlerbehandlung-einschraenkungen.md)
+8. [Logging, Fehlerbehandlung und bekannte Einschränkungen](08-logging-fehlerbehandlung-einschraenkungen.md)
    Wie Logging konfiguriert ist, die grundsätzliche Fehlerbehandlungs-
    Philosophie der Anwendung, und eine Liste bewusster Design-Grenzen.
-10. [Splunk-Integration und Feldkonzept](10-splunk-integration-und-feldkonzept.md)
-    Die konkrete `inputs.conf`/`props.conf`-Konfiguration unter
-    [`splunk/`](../splunk/) und [`cribl/`](../cribl/): Test (Standalone)
-    vs. Produktiv (UF → Cribl → Splunk Enterprise), Sourcetype-/Zeitfeld-
-    Zuordnung, welche Felder indiziert werden bzw. bewusst nicht, und warum –
-    plus das Dashboard „BTC Mempool Explorer“ (Dashboard Studio).
-11. [Mempool-Watch: Sanktionsadressen im Mempool](11-mempool-watch-sanktionsadressen.md)
+9. [Splunk-Integration und Feldkonzept](09-splunk-integration-und-feldkonzept.md)
+   Die konkrete `inputs.conf`/`props.conf`-Konfiguration unter
+   [`splunk/`](../splunk/) und [`cribl/`](../cribl/): Test (Standalone)
+   vs. Produktiv (UF → Cribl → Splunk Enterprise), Sourcetype-/Zeitfeld-
+   Zuordnung (inkl. des extern gelieferten `btc:prices`), welche Felder
+   indiziert werden bzw. bewusst nicht, und warum – plus das Dashboard
+   „BTC Mempool Explorer“ (Dashboard Studio).
+10. [Mempool-Watch: Sanktionsadressen im Mempool](10-mempool-watch-sanktionsadressen.md)
     Wie `mempool-watch` jede neue Mempool-Transaktion (ZMQ `sequence` +
     periodischer Abgleich) gegen eine Sanktionsliste prüft, welche
     Node-Konfiguration dafür nötig ist, und welche Ereignisse nach Splunk
     exportiert werden.
-12. [Splunk: Backfill der vollständigen Chain indexieren](12-splunk-backfill-indexierung.md)
+11. [Splunk: Backfill der vollständigen Chain indexieren](11-splunk-backfill-indexierung.md)
     Welche Splunk-Standardwerte historische Chain-Daten falsch stempeln
     oder löschen würden, die Index-/Tuning-Apps, das Prüf- und
     Aktivierungsskript, Durchsatz-Hebel und Verifikation.
@@ -59,7 +56,7 @@ Stand zum Zeitpunkt ihrer Erstellung.
 ## Kurzeinstieg
 
 ```sh
-cd full_app
+cd <repository>
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ./start.sh

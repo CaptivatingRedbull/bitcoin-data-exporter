@@ -15,10 +15,10 @@ from typing import Any
 
 import yaml
 
-# full_app/ - the directory containing config/ and this package. Every
-# relative path in config.yaml is resolved against this, not the process
-# working directory, so the app behaves the same no matter where it's
-# launched from.
+# The repository root - the directory containing config/ and this package.
+# Every relative path in config.yaml is resolved against this, not the
+# process working directory, so the app behaves the same no matter where
+# it's launched from.
 APP_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "config.yaml"
 
@@ -36,101 +36,6 @@ def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
     if key not in section:
         raise ConfigError(f"config.yaml: missing '{key}' in '{section_name}' section")
     return section[key]
-
-
-# =============================================================================
-# mempool_api
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class RateLimitConfig:
-    requests_per_minute: float
-    bucket_size: int
-
-
-@dataclass(frozen=True)
-class EndpointConfig:
-    name: str
-    path: str
-    parser: str
-    interval_seconds: float
-
-
-@dataclass(frozen=True)
-class MempoolApiConfig:
-    base_url: str
-    output_dir: Path
-    request_timeout_seconds: float
-    max_connection_retries: int
-    retry_backoff_seconds: float
-    rate_limit: RateLimitConfig
-    endpoints: tuple[EndpointConfig, ...]
-
-
-def _load_mempool_api(raw: dict[str, Any], root: Path) -> MempoolApiConfig:
-    section = _require(raw, "mempool_api", "root")
-    rate_limit_raw = _require(section, "rate_limit", "mempool_api")
-    endpoints_raw = _require(section, "endpoints", "mempool_api")
-
-    if not endpoints_raw:
-        raise ConfigError("config.yaml: 'mempool_api.endpoints' must not be empty")
-
-    max_connection_retries = int(
-        _require(section, "max_connection_retries", "mempool_api")
-    )
-    if max_connection_retries < 0:
-        raise ConfigError(
-            "config.yaml: 'mempool_api.max_connection_retries' must be >= 0"
-        )
-
-    requests_per_minute = float(
-        _require(rate_limit_raw, "requests_per_minute", "mempool_api.rate_limit")
-    )
-    if requests_per_minute <= 0:
-        raise ConfigError(
-            "config.yaml: 'mempool_api.rate_limit.requests_per_minute' must be > 0"
-        )
-
-    bucket_size = int(
-        _require(rate_limit_raw, "bucket_size", "mempool_api.rate_limit")
-    )
-    if bucket_size < 1:
-        raise ConfigError(
-            "config.yaml: 'mempool_api.rate_limit.bucket_size' must be >= 1"
-        )
-
-    def _endpoint(e: dict[str, Any]) -> EndpointConfig:
-        interval_seconds = float(_require(e, "interval_seconds", "mempool_api.endpoints[]"))
-        if interval_seconds <= 0:
-            raise ConfigError(
-                "config.yaml: 'mempool_api.endpoints[].interval_seconds' must be > 0"
-            )
-        return EndpointConfig(
-            name=_require(e, "name", "mempool_api.endpoints[]"),
-            path=_require(e, "path", "mempool_api.endpoints[]"),
-            parser=_require(e, "parser", "mempool_api.endpoints[]"),
-            interval_seconds=interval_seconds,
-        )
-
-    endpoints = tuple(_endpoint(e) for e in endpoints_raw)
-
-    return MempoolApiConfig(
-        base_url=str(_require(section, "base_url", "mempool_api")).rstrip("/"),
-        output_dir=_resolve_path(root, _require(section, "output_dir", "mempool_api")),
-        request_timeout_seconds=float(
-            _require(section, "request_timeout_seconds", "mempool_api")
-        ),
-        max_connection_retries=max_connection_retries,
-        retry_backoff_seconds=float(
-            _require(section, "retry_backoff_seconds", "mempool_api")
-        ),
-        rate_limit=RateLimitConfig(
-            requests_per_minute=requests_per_minute,
-            bucket_size=bucket_size,
-        ),
-        endpoints=endpoints,
-    )
 
 
 # =============================================================================
@@ -193,7 +98,7 @@ class RpcConfig:
     halving_interval_blocks: int
     initial_subsidy_sats: int
     # How rpc/client.py talks to bitcoind: "cli" (a bitcoin-cli subprocess
-    # per call - the original behaviour) or "http" (direct JSON-RPC over a
+    # per call, the default) or "http" (direct JSON-RPC over a
     # kept-alive HTTP connection). http_url/cookie_file are only used by
     # "http"; left unset, both are derived from extra_args
     # (-rpcconnect/-rpcport/-rpccookiefile/-datadir) so they match whatever
@@ -440,7 +345,6 @@ class AppConfig:
     root: Path
     config_path: Path
     logging: LoggingConfig
-    mempool_api: MempoolApiConfig
     mining_pools_dataset: MiningPoolsDatasetConfig
     rpc: RpcConfig
     stale_blocks: StaleBlocksConfig
@@ -464,7 +368,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         root=root,
         config_path=config_path,
         logging=_load_logging(raw, root),
-        mempool_api=_load_mempool_api(raw, root),
         mining_pools_dataset=_load_mining_pools_dataset(raw, root),
         rpc=_load_rpc(raw, root),
         stale_blocks=_load_stale_blocks(raw, root),

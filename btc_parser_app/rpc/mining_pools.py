@@ -18,7 +18,7 @@ offline from data getblock verbosity=3 already returns:
 The signature dataset (config/pools-v2.json) uses the same schema as
 mempool.space's own pools-v2.json: [{"id", "name", "link", "tags":
 [...ascii substrings...], "addresses": [...base58/bech32 strings...]}, ...].
-See btc_parser_app.api.mining_pools_dataset for how it's kept up to date.
+See btc_parser_app.rpc.mining_pools_dataset for how it's kept up to date.
 """
 
 from __future__ import annotations

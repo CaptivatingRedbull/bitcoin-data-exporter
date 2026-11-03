@@ -1,19 +1,18 @@
 """Stale/orphaned chain-tip header pipeline - the "reorg intel" dataset
 alongside the main-chain rpc-ingest pipeline. Long-running process (one
-command, `stale-blocks-ingest`), same shape as run_rpc_ingest/run_poller:
-runs forever, SIGTERM/SIGINT stop cleanly between passes.
+command, `stale-blocks-ingest`), same shape as run_rpc_ingest: runs
+forever, SIGTERM/SIGINT stop cleanly between passes.
 
 Headers only, deliberately - no transaction data, no full block bodies, for
-anyone. This pipeline used to also try to pull full block/tx data (via
-getblockfrompeer for tips this node's own peers had, and via submitheader/
-submitblock to import bitcoin-data/stale-blocks' full-block blobs), but that
-turned out to produce a lumpy, inconsistent dataset in production: Bitcoin
-Core's checkpoint mechanism categorically rejects any competing header or
-block at or below its highest hardcoded checkpoint - confirmed here that
-this covers the overwhelming majority of the GitHub dataset, right up to
-within ~1000 blocks of the live tip - so only a small, essentially random
-subset of entries could ever reach "complete" while the rest stayed stuck.
-Header-only avoids that wall entirely (both sources already hand us raw
+anyone. Full block/tx data could only come from getblockfrompeer (for tips
+this node's own peers still have) or from submitheader/submitblock-ing
+bitcoin-data/stale-blocks' full-block blobs into the node, and that would
+produce a lumpy, inconsistent dataset: Bitcoin Core's checkpoint mechanism
+categorically rejects any competing header or block at or below its
+highest hardcoded checkpoint - which covers the overwhelming majority of
+the GitHub dataset, right up to within ~1000 blocks of the live tip - so
+only a small, essentially random subset of entries could ever be
+"complete" while the rest stayed stuck. Header-only avoids that wall entirely (both sources already hand us raw
 header bytes, parsed offline via common.block_header - no node involvement
 needed to use the GitHub dataset at all) and makes every entry the same
 shape, regardless of source or age.
