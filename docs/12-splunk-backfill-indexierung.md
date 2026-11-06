@@ -29,28 +29,28 @@ für frische Logdaten gedacht, nicht für Ereignisse ab 2009:
 
 Außerdem: Bei `INDEXED_EXTRACTIONS` parst die Instanz, die die Datei
 **liest**, nicht der Indexer. Auf der Test-Standalone-Instanz ist das
-dieselbe; dort liegen `TA-btc-parser-inputs`, `TA-btc-parser-parsing` und
-`TA-btc-parser-search` zusammen. In Prod (UF → Cribl → Splunk) übernimmt die
-Cribl-Pipeline die Index-Time-Arbeit, und `TA-btc-parser-parsing` gehört
+dieselbe; dort liegen `zrz_in_btc_exporter`, `zrz_ko_btc` und
+`zrz_rd_btc` zusammen. In Prod (UF → Cribl → Splunk) übernimmt die
+Cribl-Pipeline die Index-Time-Arbeit, und `zrz_ko_btc` gehört
 **nicht** auf den UF (Kapitel 10.1/10.2).
 
 ## 12.2 Die Bausteine im Repository
 
 | Pfad | Wohin | Inhalt |
 |---|---|---|
-| `splunk/TA-btc-parser-parsing/` | lesende Instanz (Test-Standalone) | Index-Time-`props.conf`/`transforms.conf` (Kapitel 10.6, erzeugt von `splunk/build_field_config.py`), mit `MAX_DAYS_AGO = 10951` (Maximum, ~30 Jahre) und `ANNOTATE_PUNCT = false` für alle Sourcetypes. |
-| `splunk/TA-btc-parser-search/` | Search Head (Test-Standalone) | Search-Time-Extraktion und `fields.conf` (Kapitel 10.6). |
-| `splunk/TA-btc-parser-indexes/` | Indexer | `[btc_parser]`: Retention ~50 Jahre (`frozenTimePeriodInSecs`, `quarantinePastSecs`), `maxTotalDataSizeMB` 6 TB (an die Platte anpassen!), `maxDataSize = auto_high_volume`, `maxHotBuckets = 10`, `tsidxWritingLevel = 4`. Existiert der Index schon (z. B. über Splunk Web angelegt), gewinnen dessen Pfade; Retention-Werte, die dort explizit gesetzt sind, müssen dort korrigiert werden – `btool --debug` zeigt, woher jeder Wert kommt. |
-| `splunk/TA-btc-parser-ingest-tuning/` | lesende Instanz **und** Indexer | `parallelIngestionPipelines = 4`, Queue-Größe 32 MB, `maxKBps = 0`. |
-| `splunk/scripts/btc-splunk-enable-backfill.sh` | Host (als root) | `--check`: Bestandsaufnahme und Prüfung aller Punkte aus 12.1, ändert nichts. `--enable`: dieselbe Prüfung; nur wenn nichts FAIL ist, werden die `disabled`-Zeilen der `export/rpc/`-Batch-Stanzas entfernt und Splunk neu gestartet (Indexer zuerst, dann die lesende Instanz), danach 5 Minuten Beobachtung, ob Parts verschwinden. Optional `--snapshot-dir` (Hardlink-Snapshot, siehe 12.3 Schritt 5), `--allow-empty` (Neustart von Null, noch keine Parts). Log: `/var/log/btc-splunk-enable-backfill.log`. |
-| `splunk/scripts/btc-fresh-start.sh` | Host (als root) | Neustart von Null mit zeitgesteuertem Start, siehe 12.8. |
-| `splunk/scripts/btc-splunk-bench.sh` | Host | Suchperformance-Benchmark, siehe 12.9. |
+| `splunk/zrz_ko_btc/` | lesende Instanz (Test-Standalone; Prod: CM + SHCD, dort hinter Cribl wirkungslos) | Index-Time-`props.conf`/`transforms.conf` (Kapitel 10.6, erzeugt von `tools/splunk/build_field_config.py`), mit `MAX_DAYS_AGO = 10951` (Maximum, ~30 Jahre) und `ANNOTATE_PUNCT = false` für alle Sourcetypes. |
+| `splunk/zrz_rd_btc/` | Search Head (Test-Standalone; Prod: SHCD) | Search-Time-Extraktion und `fields.conf` (Kapitel 10.6), Dashboard und Reports (Kapitel 10.9). |
+| `splunk/zrz_ix_btc/` | Indexer (Prod: CM) | `[zrz_btc]`: Retention ~50 Jahre (`frozenTimePeriodInSecs`, `quarantinePastSecs`), `maxTotalDataSizeMB` 6 TB (an die Platte anpassen!), `maxDataSize = auto_high_volume`, `maxHotBuckets = 10`, `tsidxWritingLevel = 4`. Existiert der Index schon (z. B. über Splunk Web angelegt), gewinnen dessen Pfade; Retention-Werte, die dort explizit gesetzt sind, müssen dort korrigiert werden – `btool --debug` zeigt, woher jeder Wert kommt. |
+| `splunk/zrz_in_btc_exporter/local/limits.conf`, `local/server.conf` | lesende Instanz (UF; Test-Standalone = zugleich Indexer) | `maxKBps = 0`, `parallelIngestionPipelines = 4`, Queue-Größe 32 MB. Früher eine eigene Tuning-App; nach der ZRZ-Vorlage gibt es dafür keinen App-Typ. Der UF-Teil gehört in die Input-App (wird nur an den Parser-Host verteilt), der Indexer-Teil ist global für alle Use Cases und damit Sache der Plattform (10.10). |
+| `tools/splunk/btc-splunk-enable-backfill.sh` | Host (als root) | `--check`: Bestandsaufnahme und Prüfung aller Punkte aus 12.1, ändert nichts. `--enable`: dieselbe Prüfung; nur wenn nichts FAIL ist, werden die `disabled`-Zeilen der `export/rpc/`-Batch-Stanzas entfernt und Splunk neu gestartet (Indexer zuerst, dann die lesende Instanz), danach 5 Minuten Beobachtung, ob Parts verschwinden. Optional `--snapshot-dir` (Hardlink-Snapshot, siehe 12.3 Schritt 5), `--allow-empty` (Neustart von Null, noch keine Parts). Log: `/var/log/btc-splunk-enable-backfill.log`. |
+| `tools/splunk/btc-fresh-start.sh` | Host (als root) | Neustart von Null mit zeitgesteuertem Start, siehe 12.8. |
+| `tools/splunk/btc-splunk-bench.sh` | Host | Suchperformance-Benchmark, siehe 12.9. |
 
 Die Prüfungen des Skripts:
 
 | Prüfung | Schwelle | Stufe |
 |---|---|---|
-| je Sourcetype auf der lesenden Instanz `INDEXED_EXTRACTIONS = csv` **oder** `TIME_PREFIX` + `TRANSFORMS-btc_10_indexed` (Kapitel 10.6) | – | FAIL |
+| je Sourcetype auf der lesenden Instanz `INDEXED_EXTRACTIONS = csv` **oder** `TIME_PREFIX` + `TRANSFORMS-zrz_btc_10_indexed` (Kapitel 10.6) | – | FAIL |
 | `MAX_DAYS_AGO` je Sourcetype auf der lesenden Instanz | ≥ Tage seit 2009 + 1 Jahr | FAIL |
 | Index existiert auf dem Indexer | – | FAIL |
 | `frozenTimePeriodInSecs`, `quarantinePastSecs` | ≥ Sekunden seit 2009 + 5 Jahre | FAIL |
@@ -74,23 +74,31 @@ dahin deaktiviert.
    `/opt/splunkforwarder` = UF; bei Enterprise-only beides nach
    `/opt/splunk`):
    ```bash
-   READ=/opt/splunkforwarder   # Instanz mit TA-btc-parser-inputs
+   READ=/opt/splunkforwarder   # Instanz mit zrz_in_btc_exporter
    IDX=/opt/splunk             # Indexer
-   cp -r /opt/btc_parser/app/splunk/TA-btc-parser-parsing      $READ/etc/apps/
-   cp -r /opt/btc_parser/app/splunk/TA-btc-parser-search       $IDX/etc/apps/
-   cp -r /opt/btc_parser/app/splunk/TA-btc-parser-ingest-tuning $READ/etc/apps/
-   cp -r /opt/btc_parser/app/splunk/TA-btc-parser-ingest-tuning $IDX/etc/apps/
-   cp -r /opt/btc_parser/app/splunk/TA-btc-parser-indexes      $IDX/etc/apps/
-   chown -R "$(stat -c %U $READ)": $READ/etc/apps/TA-btc-parser-*
-   chown -R "$(stat -c %U $IDX)":  $IDX/etc/apps/TA-btc-parser-*
+   APPS=/opt/btc_parser/app/splunk
+   # Input-App: beim ersten Mal komplett kopieren und $PARSER_DATA_ROOT in
+   # local/inputs.conf ersetzen (Kapitel 10.10 #2). Danach nur noch die
+   # Tuning-Dateien nachziehen, damit die angepasste inputs.conf bleibt:
+   cp $APPS/zrz_in_btc_exporter/local/{limits,server}.conf $READ/etc/apps/zrz_in_btc_exporter/local/
+   cp -r $APPS/zrz_ko_btc $READ/etc/apps/
+   cp -r $APPS/zrz_ix_btc $IDX/etc/apps/
+   cp -r $APPS/zrz_rd_btc $IDX/etc/apps/
+   chown -R "$(stat -c %U $READ)": $READ/etc/apps/zrz_*_btc*
+   chown -R "$(stat -c %U $IDX)":  $IDX/etc/apps/zrz_*_btc*
    ```
+   Sind UF und Indexer getrennte Instanzen, braucht der Indexer die
+   `server.conf`-Werte zusätzlich (dort nicht über eine Use-Case-App,
+   siehe 12.2). Im ZRZ-Betrieb verteilen DS (`zrz_ds_btc` →
+   `zrz_in_btc_exporter`), Cluster Manager (`zrz_ix_btc`, `zrz_ko_btc`) und
+   SHC-Deployer (`zrz_ko_btc`, `zrz_rd_btc`) die Apps statt `cp`.
    Vorher `maxTotalDataSizeMB` in
-   `TA-btc-parser-indexes/default/indexes.conf` an die tatsächliche Größe
+   `zrz_ix_btc/default/indexes.conf` an die tatsächliche Größe
    des `SPLUNK_DB`-Volumes anpassen (lieber dort per `local/indexes.conf`
    überschreiben als die Datei aus dem Repo ändern).
 3. **Prüfen**:
    ```bash
-   /opt/btc_parser/app/splunk/scripts/btc-splunk-enable-backfill.sh --check --count-rows
+   /opt/btc_parser/app/tools/splunk/btc-splunk-enable-backfill.sh --check --count-rows
    ```
    Muss mit `Preflight: 0 FAIL` und `Would enable: yes` enden. Die
    ausgegebenen Zeilenzahlen notieren (Abgleich in 12.5). WARNs ansehen –
@@ -100,13 +108,13 @@ dahin deaktiviert.
    einen Testindex:
    ```bash
    systemctl restart Splunkd            # bzw. SplunkForwarder + Splunkd
-   mkdir -p /tmp/btc_canary
-   head -n 101 /parser-data/export/rpc/blocks/blocks.csv > /tmp/btc_canary/blocks_2009.csv
-   # Index btc_canary vorher in Splunk Web anlegen; dann (auf der lesenden Instanz):
-   $READ/bin/splunk add oneshot /tmp/btc_canary/blocks_2009.csv -index btc_canary -sourcetype btc:blocks
+   mkdir -p /tmp/zrz_btc_canary
+   head -n 101 /parser-data/export/rpc/blocks/blocks.csv > /tmp/zrz_btc_canary/blocks_2009.csv
+   # Index zrz_btc_canary vorher in Splunk Web anlegen; dann (auf der lesenden Instanz):
+   $READ/bin/splunk add oneshot /tmp/zrz_btc_canary/blocks_2009.csv -index zrz_btc_canary -sourcetype zrz:btc:blocks
    ```
-   Suche `index=btc_canary | stats count min(_time) as min max(_time) as max | convert ctime(min) ctime(max)`
-   → 100 Events, Minimum 03.01.2009. Danach Index `btc_canary` löschen.
+   Suche `index=zrz_btc_canary | stats count min(_time) as min max(_time) as max | convert ctime(min) ctime(max)`
+   → 100 Events, Minimum 03.01.2009. Danach Index `zrz_btc_canary` löschen.
 5. **Snapshot entscheiden**: `--snapshot-dir` legt direkt vor dem
    Aktivieren einen Hardlink-Snapshot (`cp -al`) der Export-Ordner an.
    Das kostet zunächst keinen Platz; aber solange er existiert, gibt das
@@ -119,7 +127,7 @@ dahin deaktiviert.
    Lauf):
    ```bash
    systemd-run --unit=btc-splunk-enable --on-calendar='2026-10-18 01:00:00 Europe/Berlin' \
-     /opt/btc_parser/app/splunk/scripts/btc-splunk-enable-backfill.sh --enable \
+     /opt/btc_parser/app/tools/splunk/btc-splunk-enable-backfill.sh --enable \
        --snapshot-dir /parser-data/export-snapshot
    systemctl list-timers 'btc-splunk-enable*'     # prüfen
    systemctl stop btc-splunk-enable.timer         # abbrechen
@@ -132,9 +140,10 @@ dahin deaktiviert.
 
 In der Reihenfolge ihrer Wirkung:
 
-1. **`maxKBps = 0` auf einem UF** (Tuning-App). Ohne das ist alles andere
+1. **`maxKBps = 0` auf einem UF** (`zrz_in_btc_exporter/local/limits.conf`). Ohne das ist alles andere
    egal.
-2. **`parallelIngestionPipelines`** (Tuning-App: 4). Jede Pipeline-Gruppe
+2. **`parallelIngestionPipelines`** (`zrz_in_btc_exporter/local/server.conf`: 4;
+   auf einem separaten Indexer Plattform-Einstellung). Jede Pipeline-Gruppe
    liest, parst und indexiert unabhängig, mit eigenen Hot-Buckets. Auf
    dem 16-Kern-Host mit bitcoind daneben ist 4 der Startwert, 6 das
    sinnvolle Maximum. Im Monitoring Console (*Indexing → Performance:
@@ -142,16 +151,16 @@ In der Reihenfolge ihrer Wirkung:
    die Indexierung/Platte die Grenze und mehr Pipelines helfen nicht; sind
    sie leer und CPU frei, erhöhen (Neustart nötig).
 3. **UF-Hop sparen**, falls UF und Enterprise auf demselben Host laufen:
-   `TA-btc-parser-inputs` und `TA-btc-parser-parsing` direkt in
+   `zrz_in_btc_exporter` und `zrz_ko_btc` direkt in
    `/opt/splunk/etc/apps` installieren und den UF für diese Inputs
    deaktivieren. Spart das Weiterleiten über TCP und eine zweite
    Pipeline-Kette. Für `batch`-Inputs unkritisch, weil die Dateien nach dem
    Einlesen ohnehin weg sind (kein Fishbucket-Zustand, der umziehen
    müsste). Vor dem Aktivieren erledigen, nicht mittendrin.
 4. **Große Buckets** (`maxDataSize = auto_high_volume`, `maxHotBuckets = 10`,
-   Index-App): weniger Bucket-Rolls und Optimize-Läufe.
+   `zrz_ix_btc`): weniger Bucket-Rolls und Optimize-Läufe.
 5. **Konkurrenz abschalten** während des Backfills: Data-Model-
-   Beschleunigungen und geplante Suchen auf `btc_parser` pausieren (sie
+   Beschleunigungen und geplante Suchen auf `zrz_btc` pausieren (sie
    würden jeden neuen Bucket sofort wieder durchsuchen), danach wieder
    einschalten.
 6. **Betriebssystem**: Transparent Huge Pages auf `never` (Splunk-
@@ -162,8 +171,8 @@ In der Reihenfolge ihrer Wirkung:
 
 Der größte Hebel war eine **Designentscheidung**: Ursprünglich legte
 `INDEXED_EXTRACTIONS = csv` für jede Spalte jedes Events ein indiziertes
-Feld an. Seit Kapitel 10.6 werden auf `btc:transactions`/`btc:inputs`/
-`btc:outputs` nur noch 5/5/3 von 63/23/12 Spalten indiziert, der Rest wird
+Feld an. Seit Kapitel 10.6 werden auf `zrz:btc:transactions`/`zrz:btc:inputs`/
+`zrz:btc:outputs` nur noch 5/5/3 von 63/23/12 Spalten indiziert, der Rest wird
 zur Suchzeit extrahiert. Das heißt weniger Index-Time-CPU und deutlich
 kleinere tsidx-Dateien, dafür kein `tstats` mehr auf Messwerten wie
 Gebühren oder Beträgen.
@@ -173,7 +182,7 @@ Gebühren oder Beträgen.
 Durchsatz je Sourcetype (KB pro 5 Minuten):
 
 ```
-index=_internal source=*metrics.log group=per_sourcetype_thruput series=btc:*
+index=_internal source=*metrics.log group=per_sourcetype_thruput series=zrz:btc:*
 | timechart span=5m sum(kb) by series
 ```
 
@@ -194,13 +203,13 @@ index=_internal sourcetype=splunkd (component=DateParserVerbose OR component=Agg
 Fortschritt und Zeitbereich:
 
 ```
-| tstats count min(_time) as min max(_time) as max where index=btc_parser by sourcetype
+| tstats count min(_time) as min max(_time) as max where index=zrz_btc by sourcetype
 | convert ctime(min) ctime(max)
 ```
 
 Am Ende müssen die Zählungen den Zeilenzahlen aus `--check --count-rows`
 entsprechen (plus die seitdem am Tip hinzugekommenen Blöcke), `min` bei
-`btc:blocks`/`btc:transactions`/`btc:outputs`/`btc:inputs` am
+`zrz:btc:blocks`/`zrz:btc:transactions`/`zrz:btc:outputs`/`zrz:btc:inputs` am
 03.01.2009 liegen und die Export-Ordner bis auf die laufend
 hinzukommenden Tip-Parts leer sein. Erst dann den Snapshot löschen:
 
@@ -228,7 +237,7 @@ Backfill-Zeitraum besorgen oder den Backfill über mehrere Tage verteilen
 
 ## 12.8 Neustart von Null (Index leeren, Parser ab Genesis)
 
-`splunk/scripts/btc-fresh-start.sh` (als root, Test-Standalone):
+`tools/splunk/btc-fresh-start.sh` (als root, Test-Standalone):
 
 1. **Vorher (optional): Benchmark auf dem alten Stand** – 12.9,
    `btc-splunk-bench.sh before`. Die Suchen laufen auch auf einem Index, in
@@ -239,9 +248,9 @@ Backfill-Zeitraum besorgen oder den Backfill über mehrere Tage verteilen
    - stoppt `btc-parser-rpc-ingest` (die anderen drei Dienste laufen weiter)
    - stellt sicher, dass die `export/rpc`-Batch-Stanzas `disabled = 1`
      tragen
-   - installiert `TA-btc-parser-parsing` und `TA-btc-parser-search` aus dem
-     Checkout (nur `default/`, `metadata/`; `local/` bleibt)
-   - stoppt Splunk, führt `splunk clean eventdata -index btc_parser` aus und
+   - installiert `zrz_ko_btc` und `zrz_rd_btc` aus dem
+     Checkout (nur `default/`, `metadata/`, `lookups/`; `local/` bleibt)
+   - stoppt Splunk, führt `splunk clean eventdata -index zrz_btc` aus und
      setzt den Fishbucket-Eintrag jeder Datei der `monitor`-Stanzas zurück
      (Preise, Stale-Header, Sanktionsereignisse werden ab Byte 0 neu
      gelesen)
@@ -262,18 +271,18 @@ Backfill-Zeitraum besorgen oder den Backfill über mehrere Tage verteilen
    `/var/log/btc-fresh-start.log` und
    `/var/log/btc-splunk-enable-backfill.log`, Fortschritt per 12.5.
 
-**Dashboard nach dem Backfill:** Die stündlichen `btc_rec_*_update`-Suchen
-von `btc-parser-dashboards` sehen nur Events der letzten 7 Tage
+**Dashboard nach dem Backfill:** Die stündlichen `zrz_btc_rec_*_update`-Suchen
+von `zrz_rd_btc` sehen nur Events der letzten 7 Tage
 Ereigniszeit, also keine historischen Blöcke. Ist der Backfill am Tip
-angekommen, die fünf `btc_rec_*_rebuild`-Suchen einmal von Hand starten,
+angekommen, die fünf `zrz_btc_rec_*_rebuild`-Suchen einmal von Hand starten,
 nacheinander, jede dauert Stunden (Kapitel 10.9). Vorher bleiben die
 Rekord-Panels leer bzw. zeigen nur neue Blöcke.
 
 ## 12.9 Benchmark
 
 ```bash
-SPLUNK_AUTH='admin:…' splunk/scripts/btc-splunk-bench.sh <label> [GRUPPE…]
-splunk/scripts/btc-splunk-bench.sh --compare before after
+SPLUNK_AUTH='admin:…' tools/splunk/btc-splunk-bench.sh <label> [GRUPPE…]
+tools/splunk/btc-splunk-bench.sh --compare before after
 ```
 
 Die Suchen spiegeln das Dashboard wider (Gruppen im Skriptkopf: L

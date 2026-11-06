@@ -1,10 +1,10 @@
 """Column layout of every Splunk-facing export CSV, and which columns become
 indexed fields in Splunk.
 
-Single source of truth for splunk/build_field_config.py, which generates
-the Splunk index-time app (TA-btc-parser-parsing, standalone/test instance),
-the search-time app (TA-btc-parser-search, every environment) and the Cribl
-pipeline (prod: UF -> Cribl -> Splunk) from it. tests/test_export_schema.py
+Single source of truth for tools/splunk/build_field_config.py, which
+generates the index-time part of the Splunk app zrz_ko_btc (standalone/test
+instance), the search-time part of zrz_rd_btc (every environment) and the
+Cribl pipeline (prod: UF -> Cribl -> Splunk) from it. tests/test_export_schema.py
 checks these tuples against the rows the parsers actually emit, so a column
 added to block_parser.py without updating this file fails the tests instead
 of silently shifting every positional extraction by one.
@@ -33,6 +33,15 @@ from dataclasses import dataclass
 
 from btc_parser_app.rpc.block_parser import SCRIPT_TYPES
 from btc_parser_app.rpc.mempool_watch import EVENT_COLUMNS
+
+# ZRZ Splunk naming convention (docs/10-splunk-integration-und-feldkonzept.md
+# 10.2): use case "btc" -> index zrz_btc, sourcetypes zrz:btc:<log>,
+# knowledge objects (transforms, extractions, lookups, macros, reports, ...)
+# zrz_btc_<name>, apps zrz_<ds|in|ix|ko|rd>_btc[...].
+USECASE = "btc"
+INDEX = f"zrz_{USECASE}"
+SOURCETYPE_PREFIX = f"zrz:{USECASE}:"
+KO_PREFIX = f"zrz_{USECASE}"
 
 
 def _script_type_columns(prefix: str) -> tuple[str, ...]:
@@ -239,7 +248,7 @@ class Sourcetype:
 
 SOURCETYPES: tuple[Sourcetype, ...] = (
     Sourcetype(
-        name="btc:blocks",
+        name=SOURCETYPE_PREFIX + "blocks",
         columns=BLOCK_COLUMNS,
         time_field="time",
         time_format="%s",
@@ -247,7 +256,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         description="btc_parser_app blocks.csv - one row per block (docs chapter 4.9)",
     ),
     Sourcetype(
-        name="btc:transactions",
+        name=SOURCETYPE_PREFIX + "transactions",
         columns=TRANSACTION_COLUMNS,
         time_field="block_time",
         time_format="%s",
@@ -255,7 +264,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         description="btc_parser_app transactions.csv - one row per transaction (docs chapter 4.10)",
     ),
     Sourcetype(
-        name="btc:inputs",
+        name=SOURCETYPE_PREFIX + "inputs",
         columns=INPUT_COLUMNS,
         time_field="block_time",
         time_format="%s",
@@ -269,7 +278,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         description="btc_parser_app inputs.csv - one row per vin (docs chapter 4.11)",
     ),
     Sourcetype(
-        name="btc:outputs",
+        name=SOURCETYPE_PREFIX + "outputs",
         columns=OUTPUT_COLUMNS,
         time_field="block_time",
         time_format="%s",
@@ -277,7 +286,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         description="btc_parser_app outputs.csv - one row per vout (docs chapter 4.12)",
     ),
     Sourcetype(
-        name="btc:stale_block_headers",
+        name=SOURCETYPE_PREFIX + "stale_block_headers",
         columns=STALE_BLOCK_HEADER_COLUMNS,
         time_field="observed_at",
         time_format="%Y-%m-%dT%H:%M:%SZ",
@@ -285,7 +294,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         description="btc_parser_app stale_block_headers.csv - non-active chain tips (docs chapter 5.6)",
     ),
     Sourcetype(
-        name="btc:sanctioned_tx_events",
+        name=SOURCETYPE_PREFIX + "sanctioned_tx_events",
         columns=SANCTIONED_TX_EVENT_COLUMNS,
         time_field="observed_at",
         time_format="%Y-%m-%dT%H:%M:%SZ",
@@ -296,7 +305,7 @@ SOURCETYPES: tuple[Sourcetype, ...] = (
         ),
     ),
     Sourcetype(
-        name="btc:prices",
+        name=SOURCETYPE_PREFIX + "prices",
         columns=PRICE_COLUMNS,
         time_field="date_unix",
         time_format="%s",

@@ -305,7 +305,7 @@ Testdatei nicht.
 `mempool-watch` sieht nur, was durch den Mempool **dieses** Nodes läuft.
 Eine Transaktion, die direkt/privat an einen Miner übermittelt wurde,
 taucht erst im Block auf – diese Fälle deckt ein Splunk-Alert auf den
-On-Chain-Daten (`btc:inputs`/`btc:outputs` aus `rpc-ingest`) gegen
+On-Chain-Daten (`zrz:btc:inputs`/`zrz:btc:outputs` aus `rpc-ingest`) gegen
 dieselbe Liste als Lookup ab, nicht dieser Dienst. Ebenso werden nur
 exakte Adresstreffer erkannt, keine weiteren Adressen derselben Akteure
 (Wechselgeld, Clustering).
@@ -313,7 +313,7 @@ exakte Adresstreffer erkannt, keine weiteren Adressen derselben Akteure
 Beispiel-Suche für einen Alert auf neue Mempool-Treffer:
 
 ```spl
-index=btc_parser sourcetype=btc:sanctioned_tx_events event=seen
+index=zrz_btc sourcetype=zrz:btc:sanctioned_tx_events event=seen
 | table _time txid direction address value_btc name first_name sanctions_programs source
 ```
 

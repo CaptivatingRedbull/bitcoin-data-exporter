@@ -48,11 +48,14 @@ full_app/
     pools-v2.json              bundled mining-pool signature dataset
     sanctioned_addresses.csv   sanctions list for mempool-watch
   systemd/                     unit templates + install.sh for a hardened, reboot-safe deployment
-  splunk/                      Splunk add-ons (inputs, index-time parsing, search-time fields, index
-                               definition, ingest tuning), build_field_config.py (generates the
-                               field confs + Cribl pipeline from btc_parser_app/export_schema.py)
-                               and scripts/ (enable-backfill, fresh-start, bench) - see docs/10, docs/12;
-                               dashboards/ + btc-parser-dashboards/: BTC Mempool Explorer (docs/10.9)
+  splunk/                      Splunk apps for use case "btc", ZRZ template + naming convention
+                               (see splunk/README.md, docs/10.2): zrz_ds_btc (deployment server),
+                               zrz_in_btc_exporter (UF inputs), zrz_ix_btc (index zrz_btc),
+                               zrz_ko_btc (index-time parsing), zrz_rd_btc (search-time fields,
+                               BTC Mempool Explorer dashboard, reports, lookups - docs/10.9)
+  tools/splunk/                generators (build_field_config.py: field confs + Cribl pipeline from
+                               btc_parser_app/export_schema.py; build_mempool_explorer.py: dashboard +
+                               reports) and ops scripts (enable-backfill, fresh-start, bench) - docs/10, docs/12
   cribl/                       generated prod Cribl pipeline (UF -> Cribl -> Splunk) - see cribl/README.md
   docs/                        full German-language reference
   btc_parser_app/
@@ -695,7 +698,7 @@ tracked across restarts, so a restart never re-reports a tx still in the
 mempool and still reports one that confirmed/left while the service was
 down. Not covered by design: txs that never pass through this node's
 mempool (mined privately/directly) - alert on those from the confirmed
-`btc:inputs`/`btc:outputs` data in Splunk instead. Full details (schema,
+`zrz:btc:inputs`/`zrz:btc:outputs` data in Splunk instead. Full details (schema,
 testing with `mempool-watch-check` or a private test list, Splunk alert
 example): [docs chapter 11](docs/11-mempool-watch-sanktionsadressen.md).
 

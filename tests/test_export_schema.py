@@ -1,7 +1,7 @@
 """export_schema.py must describe the CSVs the parsers really write, column
 for column and in order: the Splunk index-time transforms, the search-time
-REPORT regexes and the Cribl pipeline all address columns by position
-(splunk/build_field_config.py), so a column added to block_parser.py
+EXTRACT regexes and the Cribl pipeline all address columns by position
+(tools/splunk/build_field_config.py), so a column added to block_parser.py
 without updating export_schema.py would silently shift every field after it.
 
 Also replays the generated Splunk regexes (Python re, after translating
@@ -27,7 +27,9 @@ from pathlib import Path
 from btc_parser_app.export_schema import (
     BLOCK_COLUMNS,
     INPUT_COLUMNS,
+    KO_PREFIX,
     OUTPUT_COLUMNS,
+    SOURCETYPE_PREFIX,
     SOURCETYPES_BY_NAME,
     STALE_BLOCK_HEADER_COLUMNS,
     TRANSACTION_COLUMNS,
@@ -43,6 +45,15 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPLUNK_DIR = REPO_ROOT / "splunk"
+KO_APP = SPLUNK_DIR / "zrz_ko_btc"  # index time
+RD_APP = SPLUNK_DIR / "zrz_rd_btc"  # search time
+HEADER_CLASS = f"TRANSFORMS-{KO_PREFIX}_00_header"
+INDEXED_CLASS = f"TRANSFORMS-{KO_PREFIX}_10_indexed"
+EXTRACT_CLASS = f"EXTRACT-{KO_PREFIX}_columns"
+TRANSACTIONS = SOURCETYPE_PREFIX + "transactions"
+INPUTS = SOURCETYPE_PREFIX + "inputs"
+OUTPUTS = SOURCETYPE_PREFIX + "outputs"
+BLOCKS = SOURCETYPE_PREFIX + "blocks"
 
 
 def read_conf(path: Path) -> configparser.RawConfigParser:
@@ -108,38 +119,35 @@ class GeneratedSplunkConfigTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         blocks = [aggregate_block(make_block(h), BASE_CONFIG) for h in range(1, 60)]
         cls.lines = {
-            "btc:transactions": csv_lines([r for b in blocks for r in b.tx_events]),
-            "btc:inputs": csv_lines([r for b in blocks for r in b.input_events]),
-            "btc:outputs": csv_lines([r for b in blocks for r in b.output_events]),
+            TRANSACTIONS: csv_lines([r for b in blocks for r in b.tx_events]),
+            INPUTS: csv_lines([r for b in blocks for r in b.input_events]),
+            OUTPUTS: csv_lines([r for b in blocks for r in b.output_events]),
         }
-        cls.index_props = read_conf(SPLUNK_DIR / "TA-btc-parser-parsing/default/props.conf")
-        cls.index_transforms = read_conf(SPLUNK_DIR / "TA-btc-parser-parsing/default/transforms.conf")
-        cls.search_props = read_conf(SPLUNK_DIR / "TA-btc-parser-search/default/props.conf")
-        cls.search_transforms = read_conf(SPLUNK_DIR / "TA-btc-parser-search/default/transforms.conf")
+        cls.index_props = read_conf(KO_APP / "default/props.conf")
+        cls.index_transforms = read_conf(KO_APP / "default/transforms.conf")
+        cls.search_props = read_conf(RD_APP / "default/props.conf")
 
     def test_generated_files_are_up_to_date(self) -> None:
         result = subprocess.run(
-            [sys.executable, str(SPLUNK_DIR / "build_field_config.py"), "--check"],
+            [sys.executable, str(REPO_ROOT / "tools/splunk/build_field_config.py"), "--check"],
             capture_output=True,
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_detail_sourcetypes_rebuild_every_column(self) -> None:
-        """Indexed fields (index-time WRITE_META) + search-time REPORT fields
+        """Indexed fields (index-time WRITE_META) + search-time EXTRACT fields
         together must give back exactly the CSV row - every non-empty value,
         under its own column name, nothing extra."""
         for name, lines in self.lines.items():
             st = SOURCETYPES_BY_NAME[name]
             props = self.index_props[name]
-            header_re = to_python_regex(self.index_transforms[props["TRANSFORMS-btc_00_header"]]["REGEX"])
+            header_re = to_python_regex(self.index_transforms[props[HEADER_CLASS]]["REGEX"])
             index_tf = [
                 self.index_transforms[t.strip()]
-                for t in props["TRANSFORMS-btc_10_indexed"].split(",")
+                for t in props[INDEXED_CLASS].split(",")
             ]
-            report = to_python_regex(
-                self.search_transforms[self.search_props[name]["REPORT-btc_columns"]]["REGEX"]
-            )
+            report = to_python_regex(self.search_props[name][EXTRACT_CLASS])
             time_prefix = to_python_regex(props["TIME_PREFIX"])
 
             self.assertTrue(header_re.match(lines[0]), name)
@@ -156,17 +164,17 @@ class GeneratedSplunkConfigTest(unittest.TestCase):
                         self.assertEqual(template, "$1")
                         got[field] = m.group(1)
                 m = report.match(line)
-                self.assertIsNotNone(m, f"{name}: REPORT regex did not match {line}")
+                self.assertIsNotNone(m, f"{name}: EXTRACT regex did not match {line}")
                 got.update({k: v for k, v in m.groupdict().items() if v != ""})
                 self.assertEqual(got, expected, name)
 
                 t = time_prefix.match(line)
                 self.assertEqual(line[t.end():].split(",")[0], expected[st.time_field], name)
 
-    def test_indexed_and_report_fields_do_not_overlap(self) -> None:
+    def test_indexed_and_extract_fields_do_not_overlap(self) -> None:
         for name in self.lines:
             st = SOURCETYPES_BY_NAME[name]
-            report = self.search_transforms[self.search_props[name]["REPORT-btc_columns"]]["REGEX"]
+            report = self.search_props[name][EXTRACT_CLASS]
             groups = set(re.findall(r"\(\?<(\w+)>", report))
             self.assertEqual(groups, set(st.search_time_fields), name)
             self.assertTrue(groups.isdisjoint(st.indexed_fields), name)
@@ -174,15 +182,15 @@ class GeneratedSplunkConfigTest(unittest.TestCase):
     def test_empty_values_write_no_indexed_field(self) -> None:
         """Coinbase inputs have no prevout: prevout_type/prevout_generated
         are empty and must not become empty indexed fields."""
-        lines = self.lines["btc:inputs"]
-        props = self.index_props["btc:inputs"]
+        lines = self.lines[INPUTS]
+        props = self.index_props[INPUTS]
         tfs = {
             self.index_transforms[t.strip()]["FORMAT"].split("::")[0]: to_python_regex(
                 self.index_transforms[t.strip()]["REGEX"]
             )
-            for t in props["TRANSFORMS-btc_10_indexed"].split(",")
+            for t in props[INDEXED_CLASS].split(",")
         }
-        is_coinbase = SOURCETYPES_BY_NAME["btc:inputs"].columns.index("is_coinbase")
+        is_coinbase = SOURCETYPES_BY_NAME[INPUTS].columns.index("is_coinbase")
         coinbase = [line for line in lines[1:] if line.split(",")[is_coinbase] == "true"]
         self.assertTrue(coinbase)
         for line in coinbase:
@@ -193,16 +201,16 @@ class GeneratedSplunkConfigTest(unittest.TestCase):
 
 class CriblPipelineTest(unittest.TestCase):
     def test_keeps_only_indexed_fields_on_detail_sourcetypes(self) -> None:
-        pipeline = json.loads((REPO_ROOT / "cribl/btc_parser_pipeline.json").read_text())
+        pipeline = json.loads((REPO_ROOT / "cribl/zrz_btc_pipeline.json").read_text())
         parsers = {
             f["filter"]: f["conf"] for f in pipeline["conf"]["functions"] if f["id"] == "serde"
         }
-        for name in ("btc:transactions", "btc:inputs", "btc:outputs"):
+        for name in (TRANSACTIONS, INPUTS, OUTPUTS):
             st = SOURCETYPES_BY_NAME[name]
             conf = parsers[f'sourcetype=="{name}"']
             self.assertEqual(conf["fields"], list(st.columns))
             self.assertEqual(set(conf["keep"]), set(st.indexed_fields) | {st.time_field})
-        conf = parsers['sourcetype=="btc:blocks"']
+        conf = parsers[f'sourcetype=="{BLOCKS}"']
         self.assertNotIn("keep", conf)
 
 

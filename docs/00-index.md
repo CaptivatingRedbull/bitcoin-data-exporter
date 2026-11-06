@@ -41,11 +41,13 @@ Stand zum Zeitpunkt ihrer Erstellung.
    Wie Logging konfiguriert ist, die grundsätzliche Fehlerbehandlungs-
    Philosophie der Anwendung, und eine Liste bewusster Design-Grenzen.
 10. [Splunk-Integration und Feldkonzept](10-splunk-integration-und-feldkonzept.md)
-    Die konkrete `inputs.conf`/`props.conf`-Konfiguration unter
-    [`splunk/`](../splunk/) und [`cribl/`](../cribl/): Test (Standalone)
+    Die Splunk-Apps unter [`splunk/`](../splunk/) (ZRZ-Vorlage und
+    -Namenskonvention, Use Case `btc`, Generatoren unter
+    [`tools/splunk/`](../tools/splunk/)) und [`cribl/`](../cribl/): Test (Standalone)
     vs. Produktiv (UF → Cribl → Splunk Enterprise), Sourcetype-/Zeitfeld-
     Zuordnung, welche Felder indiziert werden bzw. bewusst nicht, und warum –
-    plus das Dashboard „BTC Mempool Explorer“ (Dashboard Studio).
+    plus das Dashboard „BTC Mempool Explorer“ (Dashboard Studio) und die
+    vor dem Rollout offenen Punkte (10.10).
 11. [Mempool-Watch: Sanktionsadressen im Mempool](11-mempool-watch-sanktionsadressen.md)
     Wie `mempool-watch` jede neue Mempool-Transaktion (ZMQ `sequence` +
     periodischer Abgleich) gegen eine Sanktionsliste prüft, welche
